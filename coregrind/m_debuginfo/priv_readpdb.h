@@ -54,6 +54,14 @@ extern Bool ML_(read_pdb_debug_info)(
    ML_(dinfo_free). */
 HChar* ML_(find_name_of_pdb_file)( const HChar* pename );
 
+/* The central function for reading PE debug info.  For the
+   object/exe specified by the SegInfo, find sections, then read
+   the symbols, line number info, file name info, CFA (stack-unwind
+   info) and anything else we want, into the tables within the
+   supplied SegInfo.
+*/
+extern Bool ML_(read_pe_debug_info) ( DebugInfo* di, Addr obj_avma,
+                                      PtrdiffT obj_bias );
 
 #endif /* ndef __PRIV_READPDB_H */
 
