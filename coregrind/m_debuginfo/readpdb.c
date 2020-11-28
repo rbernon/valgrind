@@ -91,6 +91,7 @@
 /*---                                                      ---*/
 /*------------------------------------------------------------*/
 
+typedef  ULong  ULONGLONG;
 typedef  UInt   DWORD;
 typedef  UShort WORD;
 typedef  UChar  BYTE;
@@ -109,25 +110,25 @@ typedef  UChar  BYTE;
 
 #pragma pack(2)
 typedef struct _IMAGE_DOS_HEADER {
-    unsigned short  e_magic;      /* 00: MZ Header signature */
-    unsigned short  e_cblp;       /* 02: Bytes on last page of file */
-    unsigned short  e_cp;         /* 04: Pages in file */
-    unsigned short  e_crlc;       /* 06: Relocations */
-    unsigned short  e_cparhdr;    /* 08: Size of header in paragraphs */
-    unsigned short  e_minalloc;   /* 0a: Minimum extra paragraphs needed */
-    unsigned short  e_maxalloc;   /* 0c: Maximum extra paragraphs needed */
-    unsigned short  e_ss;         /* 0e: Initial (relative) SS value */
-    unsigned short  e_sp;         /* 10: Initial SP value */
-    unsigned short  e_csum;       /* 12: Checksum */
-    unsigned short  e_ip;         /* 14: Initial IP value */
-    unsigned short  e_cs;         /* 16: Initial (relative) CS value */
-    unsigned short  e_lfarlc;     /* 18: File address of relocation table */
-    unsigned short  e_ovno;       /* 1a: Overlay number */
-    unsigned short  e_res[4];     /* 1c: Reserved words */
-    unsigned short  e_oemid;      /* 24: OEM identifier (for e_oeminfo) */
-    unsigned short  e_oeminfo;    /* 26: OEM information; e_oemid specific */
-    unsigned short  e_res2[10];   /* 28: Reserved words */
-    unsigned long   e_lfanew;     /* 3c: Offset to extended header */
+    WORD  e_magic;      /* 00: MZ Header signature */
+    WORD  e_cblp;       /* 02: Bytes on last page of file */
+    WORD  e_cp;         /* 04: Pages in file */
+    WORD  e_crlc;       /* 06: Relocations */
+    WORD  e_cparhdr;    /* 08: Size of header in paragraphs */
+    WORD  e_minalloc;   /* 0a: Minimum extra paragraphs needed */
+    WORD  e_maxalloc;   /* 0c: Maximum extra paragraphs needed */
+    WORD  e_ss;         /* 0e: Initial (relative) SS value */
+    WORD  e_sp;         /* 10: Initial SP value */
+    WORD  e_csum;       /* 12: Checksum */
+    WORD  e_ip;         /* 14: Initial IP value */
+    WORD  e_cs;         /* 16: Initial (relative) CS value */
+    WORD  e_lfarlc;     /* 18: File address of relocation table */
+    WORD  e_ovno;       /* 1a: Overlay number */
+    WORD  e_res[4];     /* 1c: Reserved words */
+    WORD  e_oemid;      /* 24: OEM identifier (for e_oeminfo) */
+    WORD  e_oeminfo;    /* 26: OEM information; e_oemid specific */
+    WORD  e_res2[10];   /* 28: Reserved words */
+    DWORD e_lfanew;     /* 3c: Offset to extended header */
 } IMAGE_DOS_HEADER, *PIMAGE_DOS_HEADER;
 
 #define IMAGE_DOS_SIGNATURE    0x5A4D     /* MZ   */
@@ -146,92 +147,255 @@ typedef struct _IMAGE_DOS_HEADER {
 #define IMAGE_SUBSYSTEM_OS2_CUI     5
 #define IMAGE_SUBSYSTEM_POSIX_CUI   7
 
+typedef struct _IMAGE_SYMBOL {
+    union {
+        BYTE    ShortName[8];
+        struct {
+            DWORD   Short;
+            DWORD   Long;
+        } Name;
+        DWORD   LongName[2];
+    } N;
+    DWORD   Value;
+    WORD    SectionNumber;
+    WORD    Type;
+    BYTE    StorageClass;
+    BYTE    NumberOfAuxSymbols;
+} IMAGE_SYMBOL;
+typedef IMAGE_SYMBOL *PIMAGE_SYMBOL;
+
+#define IMAGE_SIZEOF_SYMBOL 18
+
+#define IMAGE_SYM_UNDEFINED           (SHORT)0
+#define IMAGE_SYM_ABSOLUTE            (SHORT)-1
+#define IMAGE_SYM_DEBUG               (SHORT)-2
+
+#define IMAGE_SYM_TYPE_NULL                 0x0000
+#define IMAGE_SYM_TYPE_VOID                 0x0001
+#define IMAGE_SYM_TYPE_CHAR                 0x0002
+#define IMAGE_SYM_TYPE_SHORT                0x0003
+#define IMAGE_SYM_TYPE_INT                  0x0004
+#define IMAGE_SYM_TYPE_LONG                 0x0005
+#define IMAGE_SYM_TYPE_FLOAT                0x0006
+#define IMAGE_SYM_TYPE_DOUBLE               0x0007
+#define IMAGE_SYM_TYPE_STRUCT               0x0008
+#define IMAGE_SYM_TYPE_UNION                0x0009
+#define IMAGE_SYM_TYPE_ENUM                 0x000A
+#define IMAGE_SYM_TYPE_MOE                  0x000B
+#define IMAGE_SYM_TYPE_BYTE                 0x000C
+#define IMAGE_SYM_TYPE_WORD                 0x000D
+#define IMAGE_SYM_TYPE_UINT                 0x000E
+#define IMAGE_SYM_TYPE_DWORD                0x000F
+#define IMAGE_SYM_TYPE_PCODE                0x8000
+
+#define IMAGE_SYM_DTYPE_NULL                0
+#define IMAGE_SYM_DTYPE_POINTER             1
+#define IMAGE_SYM_DTYPE_FUNCTION            2
+#define IMAGE_SYM_DTYPE_ARRAY               3
+
+#define IMAGE_SYM_CLASS_END_OF_FUNCTION     (BYTE )-1
+#define IMAGE_SYM_CLASS_NULL                0x0000
+#define IMAGE_SYM_CLASS_AUTOMATIC           0x0001
+#define IMAGE_SYM_CLASS_EXTERNAL            0x0002
+#define IMAGE_SYM_CLASS_STATIC              0x0003
+#define IMAGE_SYM_CLASS_REGISTER            0x0004
+#define IMAGE_SYM_CLASS_EXTERNAL_DEF        0x0005
+#define IMAGE_SYM_CLASS_LABEL               0x0006
+#define IMAGE_SYM_CLASS_UNDEFINED_LABEL     0x0007
+#define IMAGE_SYM_CLASS_MEMBER_OF_STRUCT    0x0008
+#define IMAGE_SYM_CLASS_ARGUMENT            0x0009
+#define IMAGE_SYM_CLASS_STRUCT_TAG          0x000A
+#define IMAGE_SYM_CLASS_MEMBER_OF_UNION     0x000B
+#define IMAGE_SYM_CLASS_UNION_TAG           0x000C
+#define IMAGE_SYM_CLASS_TYPE_DEFINITION     0x000D
+#define IMAGE_SYM_CLASS_UNDEFINED_STATIC    0x000E
+#define IMAGE_SYM_CLASS_ENUM_TAG            0x000F
+#define IMAGE_SYM_CLASS_MEMBER_OF_ENUM      0x0010
+#define IMAGE_SYM_CLASS_REGISTER_PARAM      0x0011
+#define IMAGE_SYM_CLASS_BIT_FIELD           0x0012
+
+#define IMAGE_SYM_CLASS_FAR_EXTERNAL        0x0044
+#define IMAGE_SYM_CLASS_BLOCK               0x0064
+#define IMAGE_SYM_CLASS_FUNCTION            0x0065
+#define IMAGE_SYM_CLASS_END_OF_STRUCT       0x0066
+#define IMAGE_SYM_CLASS_FILE                0x0067
+#define IMAGE_SYM_CLASS_SECTION             0x0068
+#define IMAGE_SYM_CLASS_WEAK_EXTERNAL       0x0069
+
+#define N_BTMASK                            0x000F
+#define N_TMASK                             0x0030
+#define N_TMASK1                            0x00C0
+#define N_TMASK2                            0x00F0
+#define N_BTSHFT                            4
+#define N_TSHIFT                            2
+
+#define BTYPE(x) ((x) & N_BTMASK)
+
+#ifndef ISPTR
+#define ISPTR(x) (((x) & N_TMASK) == (IMAGE_SYM_DTYPE_POINTER << N_BTSHFT))
+#endif
+
+#ifndef ISFCN
+#define ISFCN(x) (((x) & N_TMASK) == (IMAGE_SYM_DTYPE_FUNCTION << N_BTSHFT))
+#endif
+
+#ifndef ISARY
+#define ISARY(x) (((x) & N_TMASK) == (IMAGE_SYM_DTYPE_ARRAY << N_BTSHFT))
+#endif
+
+#ifndef ISTAG
+#define ISTAG(x) ((x)==IMAGE_SYM_CLASS_STRUCT_TAG || (x)==IMAGE_SYM_CLASS_UNION_TAG || (x)==IMAGE_SYM_CLASS_ENUM_TAG)
+#endif
+
+#ifndef INCREF
+#define INCREF(x) ((((x)&~N_BTMASK)<<N_TSHIFT)|(IMAGE_SYM_DTYPE_POINTER<<N_BTSHFT)|((x)&N_BTMASK))
+#endif
+#ifndef DECREF
+#define DECREF(x) ((((x)>>N_TSHIFT)&~N_BTMASK)|((x)&N_BTMASK))
+#endif
+
 typedef struct _IMAGE_FILE_HEADER {
-  unsigned short  Machine;
-  unsigned short  NumberOfSections;
-  unsigned long   TimeDateStamp;
-  unsigned long   PointerToSymbolTable;
-  unsigned long   NumberOfSymbols;
-  unsigned short  SizeOfOptionalHeader;
-  unsigned short  Characteristics;
+  WORD  Machine;
+  WORD  NumberOfSections;
+  DWORD TimeDateStamp;
+  DWORD PointerToSymbolTable;
+  DWORD NumberOfSymbols;
+  WORD  SizeOfOptionalHeader;
+  WORD  Characteristics;
 } IMAGE_FILE_HEADER, *PIMAGE_FILE_HEADER;
 
 typedef struct _IMAGE_DATA_DIRECTORY {
-  unsigned long VirtualAddress;
-  unsigned long Size;
+  DWORD VirtualAddress;
+  DWORD Size;
 } IMAGE_DATA_DIRECTORY, *PIMAGE_DATA_DIRECTORY;
 
 #define IMAGE_NUMBEROF_DIRECTORY_ENTRIES 16
+
+typedef struct _IMAGE_OPTIONAL_HEADER64 {
+  WORD  Magic; /* 0x20b */
+  BYTE MajorLinkerVersion;
+  BYTE MinorLinkerVersion;
+  DWORD SizeOfCode;
+  DWORD SizeOfInitializedData;
+  DWORD SizeOfUninitializedData;
+  DWORD AddressOfEntryPoint;
+  DWORD BaseOfCode;
+  ULONGLONG ImageBase;
+  DWORD SectionAlignment;
+  DWORD FileAlignment;
+  WORD MajorOperatingSystemVersion;
+  WORD MinorOperatingSystemVersion;
+  WORD MajorImageVersion;
+  WORD MinorImageVersion;
+  WORD MajorSubsystemVersion;
+  WORD MinorSubsystemVersion;
+  DWORD Win32VersionValue;
+  DWORD SizeOfImage;
+  DWORD SizeOfHeaders;
+  DWORD CheckSum;
+  WORD Subsystem;
+  WORD DllCharacteristics;
+  ULONGLONG SizeOfStackReserve;
+  ULONGLONG SizeOfStackCommit;
+  ULONGLONG SizeOfHeapReserve;
+  ULONGLONG SizeOfHeapCommit;
+  DWORD LoaderFlags;
+  DWORD NumberOfRvaAndSizes;
+  IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+} IMAGE_OPTIONAL_HEADER64, *PIMAGE_OPTIONAL_HEADER64;
 
 typedef struct _IMAGE_OPTIONAL_HEADER {
 
   /* Standard fields */
 
-  unsigned short Magic; /* 0x10b or 0x107 */ /* 0x00 */
-  unsigned char  MajorLinkerVersion;
-  unsigned char  MinorLinkerVersion;
-  unsigned long  SizeOfCode;
-  unsigned long  SizeOfInitializedData;
-  unsigned long  SizeOfUninitializedData;
-  unsigned long  AddressOfEntryPoint;        /* 0x10 */
-  unsigned long  BaseOfCode;
-  unsigned long  BaseOfData;
+  WORD  Magic; /* 0x10b or 0x107 */ /* 0x00 */
+  BYTE  MajorLinkerVersion;
+  BYTE  MinorLinkerVersion;
+  DWORD SizeOfCode;
+  DWORD SizeOfInitializedData;
+  DWORD SizeOfUninitializedData;
+  DWORD AddressOfEntryPoint;    /* 0x10 */
+  DWORD BaseOfCode;
+  DWORD BaseOfData;
 
   /* NT additional fields */
 
-  unsigned long ImageBase;
-  unsigned long SectionAlignment;            /* 0x20 */
-  unsigned long FileAlignment;
-  unsigned short MajorOperatingSystemVersion;
-  unsigned short MinorOperatingSystemVersion;
-  unsigned short MajorImageVersion;
-  unsigned short MinorImageVersion;
-  unsigned short MajorSubsystemVersion;      /* 0x30 */
-  unsigned short MinorSubsystemVersion;
-  unsigned long Win32VersionValue;
-  unsigned long SizeOfImage;
-  unsigned long SizeOfHeaders;
-  unsigned long CheckSum;                    /* 0x40 */
-  unsigned short Subsystem;
-  unsigned short DllCharacteristics;
-  unsigned long SizeOfStackReserve;
-  unsigned long SizeOfStackCommit;
-  unsigned long SizeOfHeapReserve;           /* 0x50 */
-  unsigned long SizeOfHeapCommit;
-  unsigned long LoaderFlags;
-  unsigned long NumberOfRvaAndSizes;
+  DWORD ImageBase;
+  DWORD SectionAlignment;   /* 0x20 */
+  DWORD FileAlignment;
+  WORD  MajorOperatingSystemVersion;
+  WORD  MinorOperatingSystemVersion;
+  WORD  MajorImageVersion;
+  WORD  MinorImageVersion;
+  WORD  MajorSubsystemVersion;    /* 0x30 */
+  WORD  MinorSubsystemVersion;
+  DWORD Win32VersionValue;
+  DWORD SizeOfImage;
+  DWORD SizeOfHeaders;
+  DWORD CheckSum;     /* 0x40 */
+  WORD  Subsystem;
+  WORD  DllCharacteristics;
+  DWORD SizeOfStackReserve;
+  DWORD SizeOfStackCommit;
+  DWORD SizeOfHeapReserve;    /* 0x50 */
+  DWORD SizeOfHeapCommit;
+  DWORD LoaderFlags;
+  DWORD NumberOfRvaAndSizes;
   IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]; /* 0x60 */
   /* 0xE0 */
-} IMAGE_OPTIONAL_HEADER, *PIMAGE_OPTIONAL_HEADER;
+} IMAGE_OPTIONAL_HEADER32, *PIMAGE_OPTIONAL_HEADER32;
+
+/* Possible Magic values */
+#define IMAGE_NT_OPTIONAL_HDR32_MAGIC      0x10b
+#define IMAGE_NT_OPTIONAL_HDR64_MAGIC      0x20b
+#define IMAGE_ROM_OPTIONAL_HDR_MAGIC       0x107
+
+typedef struct _IMAGE_NT_HEADERS64 {
+  DWORD Signature;
+  IMAGE_FILE_HEADER FileHeader;
+  IMAGE_OPTIONAL_HEADER64 OptionalHeader;
+} IMAGE_NT_HEADERS64, *PIMAGE_NT_HEADERS64;
 
 typedef struct _IMAGE_NT_HEADERS {
-  unsigned long Signature; /* "PE"\0\0 */       /* 0x00 */
-  IMAGE_FILE_HEADER FileHeader;                 /* 0x04 */
-  IMAGE_OPTIONAL_HEADER OptionalHeader;         /* 0x18 */
-} IMAGE_NT_HEADERS, *PIMAGE_NT_HEADERS;
+  DWORD Signature; /* "PE"\0\0 */ /* 0x00 */
+  IMAGE_FILE_HEADER FileHeader;   /* 0x04 */
+  IMAGE_OPTIONAL_HEADER32 OptionalHeader; /* 0x18 */
+} IMAGE_NT_HEADERS32, *PIMAGE_NT_HEADERS32;
+
+#if (VEX_HOST_WORDSIZE == 8)
+typedef IMAGE_NT_HEADERS64  IMAGE_NT_HEADERS;
+typedef PIMAGE_NT_HEADERS64 PIMAGE_NT_HEADERS;
+typedef IMAGE_OPTIONAL_HEADER64 IMAGE_OPTIONAL_HEADER;
+typedef PIMAGE_OPTIONAL_HEADER64 PIMAGE_OPTIONAL_HEADER;
+#else
+typedef IMAGE_NT_HEADERS32  IMAGE_NT_HEADERS;
+typedef PIMAGE_NT_HEADERS32 PIMAGE_NT_HEADERS;
+typedef IMAGE_OPTIONAL_HEADER32 IMAGE_OPTIONAL_HEADER;
+typedef PIMAGE_OPTIONAL_HEADER32 PIMAGE_OPTIONAL_HEADER;
+#endif
 
 #define IMAGE_SIZEOF_SHORT_NAME 8
 
 typedef struct _IMAGE_SECTION_HEADER {
-  unsigned char Name[IMAGE_SIZEOF_SHORT_NAME];
+  BYTE  Name[IMAGE_SIZEOF_SHORT_NAME];
   union {
-    unsigned long PhysicalAddress;
-    unsigned long VirtualSize;
+    DWORD PhysicalAddress;
+    DWORD VirtualSize;
   } Misc;
-  unsigned long VirtualAddress;
-  unsigned long SizeOfRawData;
-  unsigned long PointerToRawData;
-  unsigned long PointerToRelocations;
-  unsigned long PointerToLinenumbers;
-  unsigned short NumberOfRelocations;
-  unsigned short NumberOfLinenumbers;
-  unsigned long Characteristics;
+  DWORD VirtualAddress;
+  DWORD SizeOfRawData;
+  DWORD PointerToRawData;
+  DWORD PointerToRelocations;
+  DWORD PointerToLinenumbers;
+  WORD  NumberOfRelocations;
+  WORD  NumberOfLinenumbers;
+  DWORD Characteristics;
 } IMAGE_SECTION_HEADER, *PIMAGE_SECTION_HEADER;
 
 #define	IMAGE_SIZEOF_SECTION_HEADER 40
 
 #define IMAGE_FIRST_SECTION(ntheader) \
-  ((PIMAGE_SECTION_HEADER)((LPunsigned char)&((PIMAGE_NT_HEADERS)(ntheader))->OptionalHeader + \
+  ((PIMAGE_SECTION_HEADER)((BYTE *)&((PIMAGE_NT_HEADERS)(ntheader))->OptionalHeader + \
                            ((PIMAGE_NT_HEADERS)(ntheader))->FileHeader.SizeOfOptionalHeader))
 
 /* These defines are for the Characteristics bitfield. */
@@ -242,7 +406,7 @@ typedef struct _IMAGE_SECTION_HEADER {
 /* #define IMAGE_SCN_TYPE_NO_PAD		0x00000008 - Reserved */
 /* #define IMAGE_SCN_TYPE_COPY			0x00000010 - Reserved */
 
-#define IMAGE_SCN_CNT_CODE			0x00000020
+#define IMAGE_SCN_CNT_CODE			          0x00000020
 #define IMAGE_SCN_CNT_INITIALIZED_DATA		0x00000040
 #define IMAGE_SCN_CNT_UNINITIALIZED_DATA	0x00000080
 
@@ -254,13 +418,13 @@ typedef struct _IMAGE_SECTION_HEADER {
 
 /* 						0x00002000 - Reserved */
 /* #define IMAGE_SCN_MEM_PROTECTED 		0x00004000 - Obsolete */
-#define	IMAGE_SCN_MEM_FARDATA			0x00008000
+#define	IMAGE_SCN_MEM_FARDATA			  0x00008000
 
 /* #define IMAGE_SCN_MEM_SYSHEAP		0x00010000 - Obsolete */
 #define	IMAGE_SCN_MEM_PURGEABLE			0x00020000
-#define	IMAGE_SCN_MEM_16BIT			0x00020000
-#define	IMAGE_SCN_MEM_LOCKED			0x00040000
-#define	IMAGE_SCN_MEM_PRELOAD			0x00080000
+#define	IMAGE_SCN_MEM_16BIT			    0x00020000
+#define	IMAGE_SCN_MEM_LOCKED			  0x00040000
+#define	IMAGE_SCN_MEM_PRELOAD			  0x00080000
 
 #define	IMAGE_SCN_ALIGN_1BYTES			0x00100000
 #define	IMAGE_SCN_ALIGN_2BYTES			0x00200000
@@ -273,23 +437,36 @@ typedef struct _IMAGE_SECTION_HEADER {
 
 #define IMAGE_SCN_LNK_NRELOC_OVFL		0x01000000
 
-
 #define IMAGE_SCN_MEM_DISCARDABLE		0x02000000
 #define IMAGE_SCN_MEM_NOT_CACHED		0x04000000
 #define IMAGE_SCN_MEM_NOT_PAGED			0x08000000
-#define IMAGE_SCN_MEM_SHARED			0x10000000
-#define IMAGE_SCN_MEM_EXECUTE			0x20000000
-#define IMAGE_SCN_MEM_READ			0x40000000
-#define IMAGE_SCN_MEM_WRITE			0x80000000
+#define IMAGE_SCN_MEM_SHARED			  0x10000000
+#define IMAGE_SCN_MEM_EXECUTE			  0x20000000
+#define IMAGE_SCN_MEM_READ			    0x40000000
+#define IMAGE_SCN_MEM_WRITE			    0x80000000
 
 #pragma pack()
 
+typedef struct _IMAGE_EXPORT_DIRECTORY {
+  DWORD Characteristics;
+  DWORD TimeDateStamp;
+  WORD  MajorVersion;
+  WORD  MinorVersion;
+  DWORD Name;
+  DWORD Base;
+  DWORD NumberOfFunctions;
+  DWORD NumberOfNames;
+  DWORD AddressOfFunctions;
+  DWORD AddressOfNames;
+  DWORD AddressOfNameOrdinals;
+} IMAGE_EXPORT_DIRECTORY,*PIMAGE_EXPORT_DIRECTORY;
+
 typedef struct _GUID  /* 16 bytes */
 {
-    unsigned int   Data1;
-    unsigned short Data2;
-    unsigned short Data3;
-    unsigned char  Data4[ 8 ];
+    DWORD Data1;
+    WORD  Data2;
+    WORD  Data3;
+    BYTE  Data4[ 8 ];
 } GUID;
 
 /*========================================================================
@@ -299,8 +476,8 @@ typedef struct _GUID  /* 16 bytes */
 #pragma pack(1)
 typedef struct _PDB_FILE
 {
-    unsigned long size;
-    unsigned long unknown;
+    DWORD size;
+    DWORD unknown;
 
 } PDB_FILE, *PPDB_FILE;
 
@@ -311,190 +488,190 @@ typedef struct _PDB_FILE
 struct PDB_JG_HEADER
 {
     //char ident[40];  // "Microsoft C/C++ program database 2.00\r\n\032"
-    //unsigned long  signature;  // "JG\0\0"
-    unsigned int   blocksize;  // 0x400 typical; also 0x800, 0x1000
-    unsigned short freelist;
-    unsigned short total_alloc;
+    //DWORD  signature;  // "JG\0\0"
+    DWORD    blocksize;  // 0x400 typical; also 0x800, 0x1000
+    WORD     freelist;
+    WORD     total_alloc;
     PDB_FILE toc;
-    unsigned short toc_block[ 1 ];
+    WORD     toc_block[ 1 ];
 };
 
 struct PDB_DS_HEADER
 {
     //char   signature[32];  // "Microsoft C/C++ MSF 7.00\r\n\032DS\0\0"
-    unsigned int  block_size;
-    unsigned int unknown1;
-    unsigned int num_pages;
-    unsigned int toc_size;
-    unsigned int unknown2;
-    unsigned int toc_page;
+    DWORD block_size;
+    DWORD unknown1;
+    DWORD num_pages;
+    DWORD toc_size;
+    DWORD unknown2;
+    DWORD toc_page;
 };
 
 struct PDB_JG_TOC
 {
-    unsigned int  nFiles;
+    DWORD    nFiles;
     PDB_FILE file[ 1 ];
 
 };
 
 struct PDB_DS_TOC
 {
-    unsigned int num_files;
-    unsigned int file_size[1];
+    DWORD num_files;
+    DWORD file_size[1];
 };
 
 struct PDB_JG_ROOT
 {
-    unsigned int  version;
-    unsigned int  TimeDateStamp;
-    unsigned int  age;
-    unsigned int  cbNames;
-    char names[ 1 ];
+    DWORD version;
+    DWORD TimeDateStamp;
+    DWORD age;
+    DWORD cbNames;
+    char  names[ 1 ];
 };
 
 struct PDB_DS_ROOT
 {
-    unsigned int version;
-    unsigned int TimeDateStamp;
-    unsigned int age;
-    GUID guid;
-    unsigned int cbNames;
-    char names[1];
+    DWORD version;
+    DWORD TimeDateStamp;
+    DWORD age;
+    GUID  guid;
+    DWORD cbNames;
+    char  names[1];
 };
 
 typedef struct _PDB_TYPES_OLD
 {
-    unsigned long  version;
-    unsigned short first_index;
-    unsigned short last_index;
-    unsigned long  type_size;
-    unsigned short file;
-    unsigned short pad;
+    DWORD version;
+    WORD  first_index;
+    WORD  last_index;
+    DWORD type_size;
+    WORD  file;
+    WORD  pad;
 
 } PDB_TYPES_OLD, *PPDB_TYPES_OLD;
 
 typedef struct _PDB_TYPES
 {
-    unsigned long  version;
-    unsigned long  type_offset;
-    unsigned long  first_index;
-    unsigned long  last_index;
-    unsigned long  type_size;
-    unsigned short file;
-    unsigned short pad;
-    unsigned long  hash_size;
-    unsigned long  hash_base;
-    unsigned long  hash_offset;
-    unsigned long  hash_len;
-    unsigned long  search_offset;
-    unsigned long  search_len;
-    unsigned long  unknown_offset;
-    unsigned long  unknown_len;
+    DWORD version;
+    DWORD type_offset;
+    DWORD first_index;
+    DWORD last_index;
+    DWORD type_size;
+    WORD  file;
+    WORD  pad;
+    DWORD hash_size;
+    DWORD hash_base;
+    DWORD hash_offset;
+    DWORD hash_len;
+    DWORD search_offset;
+    DWORD search_len;
+    DWORD unknown_offset;
+    DWORD unknown_len;
 
 } PDB_TYPES, *PPDB_TYPES;
 
 typedef struct _PDB_SYMBOL_RANGE
 {
-    unsigned short segment;
-    unsigned short pad1;
-    unsigned long  offset;
-    unsigned long  size;
-    unsigned long  characteristics;
-    unsigned short index;
-    unsigned short pad2;
+    WORD  segment;
+    WORD  pad1;
+    DWORD offset;
+    DWORD size;
+    DWORD characteristics;
+    WORD  index;
+    WORD  pad2;
 
 } PDB_SYMBOL_RANGE, *PPDB_SYMBOL_RANGE;
 
 typedef struct _PDB_SYMBOL_RANGE_EX
 {
-    unsigned short segment;
-    unsigned short pad1;
-    unsigned long  offset;
-    unsigned long  size;
-    unsigned long  characteristics;
-    unsigned short index;
-    unsigned short pad2;
-    unsigned long  timestamp;
-    unsigned long  unknown;
+    WORD  segment;
+    WORD  pad1;
+    DWORD offset;
+    DWORD size;
+    DWORD characteristics;
+    WORD  index;
+    WORD  pad2;
+    DWORD timestamp;
+    DWORD unknown;
 
 } PDB_SYMBOL_RANGE_EX, *PPDB_SYMBOL_RANGE_EX;
 
 typedef struct _PDB_SYMBOL_FILE
 {
-    unsigned long  unknown1;
+    DWORD unknown1;
     PDB_SYMBOL_RANGE range;
-    unsigned short flag;
-    unsigned short file;
-    unsigned long  symbol_size;
-    unsigned long  lineno_size;
-    unsigned long  unknown2;
-    unsigned long  nSrcFiles;
-    unsigned long  attribute;
+    WORD  flag;
+    WORD  file;
+    DWORD symbol_size;
+    DWORD lineno_size;
+    DWORD unknown2;
+    DWORD nSrcFiles;
+    DWORD attribute;
     char filename[ 1 ];
 
 } PDB_SYMBOL_FILE, *PPDB_SYMBOL_FILE;
 
 typedef struct _PDB_SYMBOL_FILE_EX
 {
-    unsigned long  unknown1;
+    DWORD unknown1;
     PDB_SYMBOL_RANGE_EX range;
-    unsigned short flag;
-    unsigned short file;
-    unsigned long  symbol_size;
-    unsigned long  lineno_size;
-    unsigned long  unknown2;
-    unsigned long  nSrcFiles;
-    unsigned long  attribute;
-    unsigned long  reserved[ 2 ];
+    WORD  flag;
+    WORD  file;
+    DWORD symbol_size;
+    DWORD lineno_size;
+    DWORD unknown2;
+    DWORD nSrcFiles;
+    DWORD attribute;
+    DWORD reserved[ 2 ];
     char filename[ 1 ];
 
 } PDB_SYMBOL_FILE_EX, *PPDB_SYMBOL_FILE_EX;
 
 typedef struct _PDB_SYMBOL_SOURCE
 {
-    unsigned short nModules;
-    unsigned short nSrcFiles;
-    unsigned short table[ 1 ];
+    WORD nModules;
+    WORD nSrcFiles;
+    WORD table[ 1 ];
 
 } PDB_SYMBOL_SOURCE, *PPDB_SYMBOL_SOURCE;
 
 typedef struct _PDB_SYMBOL_IMPORT
 {
-    unsigned long unknown1;
-    unsigned long unknown2;
-    unsigned long TimeDateStamp;
-    unsigned long nRequests;
+    DWORD unknown1;
+    DWORD unknown2;
+    DWORD TimeDateStamp;
+    DWORD nRequests;
     char filename[ 1 ];
 
 } PDB_SYMBOL_IMPORT, *PPDB_SYMBOL_IMPORT;
 
 typedef struct _PDB_SYMBOLS_OLD
 {
-    unsigned short hash1_file;
-    unsigned short hash2_file;
-    unsigned short gsym_file;
-    unsigned short pad;
-    unsigned long  module_size;
-    unsigned long  offset_size;
-    unsigned long  hash_size;
-    unsigned long  srcmodule_size;
+    WORD  hash1_file;
+    WORD  hash2_file;
+    WORD  gsym_file;
+    WORD  pad;
+    DWORD module_size;
+    DWORD offset_size;
+    DWORD hash_size;
+    DWORD srcmodule_size;
 
 } PDB_SYMBOLS_OLD, *PPDB_SYMBOLS_OLD;
 
 typedef struct _PDB_SYMBOLS
 {
-    unsigned long  signature;
-    unsigned long  version;
-    unsigned long  unknown;
-    unsigned long  hash1_file;
-    unsigned long  hash2_file;
-    unsigned long  gsym_file;
-    unsigned long  module_size;
-    unsigned long  offset_size;
-    unsigned long  hash_size;
-    unsigned long  srcmodule_size;
-    unsigned long  pdbimport_size;
-    unsigned long  resvd[ 5 ];
+    DWORD signature;
+    DWORD version;
+    DWORD unknown;
+    DWORD hash1_file;
+    DWORD hash2_file;
+    DWORD gsym_file;
+    DWORD module_size;
+    DWORD offset_size;
+    DWORD hash_size;
+    DWORD srcmodule_size;
+    DWORD pdbimport_size;
+    DWORD resvd[ 5 ];
 
 } PDB_SYMBOLS, *PPDB_SYMBOLS;
 #pragma pack()
@@ -507,8 +684,8 @@ typedef struct _PDB_SYMBOLS
 
 struct p_string  /* "Pascal string": prefixed by byte containing length */
 {
-    unsigned char               namelen;
-    char                        name[1];
+    BYTE namelen;
+    char name[1];
 };
 /* The other kind of "char name[1]" is a "C++ string" terminated by '\0'.
  * "Name mangling" to encode type information often exceeds 255 bytes.
@@ -1156,7 +1333,7 @@ static void pdb_convert_types_header( PDB_TYPES *types, char* image )
    VG_(memset)( types, 0, sizeof(PDB_TYPES) );
    if ( !image )
       return;
-   if ( *(unsigned long *)image < 19960000 ) {  /* FIXME: correct version? */
+   if ( *(DWORD *)image < 19960000 ) {  /* FIXME: correct version? */
       /* Old version of the types record header */
       PDB_TYPES_OLD *old = (PDB_TYPES_OLD *)image;
       types->version     = old->version;
@@ -1178,7 +1355,7 @@ static void pdb_convert_symbols_header( PDB_SYMBOLS *symbols,
    VG_(memset)( symbols, 0, sizeof(PDB_SYMBOLS) );
    if ( !image )
       return;
-   if ( *(unsigned long *)image != 0xffffffff ) {
+   if ( *(DWORD *)image != 0xffffffff ) {
       /* Old version of the symbols record header */
       PDB_SYMBOLS_OLD *old     = (PDB_SYMBOLS_OLD *)image;
       symbols->version         = 0;
@@ -2111,7 +2288,7 @@ static void pdb_dump( const struct pdb_reader* pdb,
       default:
          if (VG_(clo_verbosity) > 1)
             VG_(umsg)("LOAD_PDB_DEBUGINFO: "
-                      "Unknown .pdb type info version %lu\n", types.version );
+                      "Unknown .pdb type info version %u\n", types.version );
    }
 
    header_size = 0;
@@ -2125,7 +2302,7 @@ static void pdb_dump( const struct pdb_reader* pdb,
       default:
          if (VG_(clo_verbosity) > 1)
             VG_(umsg)("LOAD_PDB_DEBUGINFO: "
-                      "Unknown .pdb symbol info version %lu\n",
+                      "Unknown .pdb symbol info version %u\n",
                       symbols.version );
    }
 
@@ -2182,7 +2359,7 @@ static void pdb_dump( const struct pdb_reader* pdb,
                                         file_name );
             n_syms_read 
                += DEBUG_SnarfCodeView( di, pe_avma, sectp_avma, modimage,
-                                           sizeof(unsigned long),
+                                           sizeof(DWORD),
                                            symbol_size );
          }
 
@@ -2320,7 +2497,7 @@ Bool ML_(read_pdb_debug_info)(
          VG_(memcpy)(name, pe_sechdr_avma->Name, 8);
          name[8] = '\0';
          VG_(umsg)("LOAD_PDB_DEBUGINFO:"
-                   "   Scanning PE section %ps at avma %#lx svma %#lx\n",
+                   "   Scanning PE section %ps at avma %#lx svma %#x\n",
                    name, obj_avma + pe_sechdr_avma->VirtualAddress,
                    pe_sechdr_avma->VirtualAddress);
       }
