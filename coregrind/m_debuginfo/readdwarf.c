@@ -2085,7 +2085,7 @@ void ML_(read_debuginfo_dwarf1) (
 #elif defined(VGP_s390x_linux)
 # define N_CFI_REGS 66
 #else
-# define N_CFI_REGS 20
+# define N_CFI_REGS 33
 #endif
 
 /* Instructions for the automaton */
