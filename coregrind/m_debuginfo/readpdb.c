@@ -2737,7 +2737,8 @@ HChar* ML_(find_name_of_pdb_file)( const HChar* pename )
 
    Int szB = (Int)stat_buf.size;
    if (szB == 0) {
-      VG_(umsg)("LOAD_PDB_DEBUGINFO: Find PDB file: %s is empty\n", tmpname);
+      if (VG_(clo_verbosity) > 1)
+         VG_(umsg)("LOAD_PDB_DEBUGINFO: Find PDB file: %s is empty\n", tmpname);
       goto out;
    }
    /* 6 == strlen("X.pdb\n") */

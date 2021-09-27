@@ -1592,7 +1592,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
    SizeT  n_pdbimage;
    struct vg_stat stat_buf;
 
-   if (VG_(clo_verbosity) > 0) {
+   if (VG_(clo_verbosity) > 1) {
       VG_(message)(Vg_UserMsg, "\n");
       VG_(message)(Vg_UserMsg,
          "LOAD_PDB_DEBUGINFO: clreq:   fd=%d, avma=%#lx, total_size=%lu, "
@@ -1617,7 +1617,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
    HChar exename[sz_exename + 1];
    VG_(strcpy)(exename, exe);  // make a copy on the stack 
 
-   if (VG_(clo_verbosity) > 0) {
+   if (VG_(clo_verbosity) > 1) {
       VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: objname: %s\n", exename);
    }
 
@@ -1751,7 +1751,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
       } else {
          VG_(message)(Vg_UserMsg, "Warning: Missing or un-stat-able %s\n",
                       pdbname);
-         if (VG_(clo_verbosity) > 0)
+         if (VG_(clo_verbosity) > 1)
             VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: missing: %s\n", pdbname);
 
          /* We cannot make any sense of this pdb, so (force) discard it,
@@ -1821,7 +1821,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
       goto out;
    }
 
-   if (VG_(clo_verbosity) > 0)
+   if (VG_(clo_verbosity) > 1)
       VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: pdbname: %s\n", pdbname);
 
    /* play safe; always invalidate the debug info caches.  I don't know if
@@ -1842,7 +1842,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
      if (ML_(read_pdb_debug_info)( di, avma_obj, bias_obj,
                                    pdbimage, n_pdbimage, pdbname, pdb_mtime )) {
         vg_assert(di->have_dinfo); // fails if PDB read failed
-        if (VG_(clo_verbosity) > 0) {
+        if (VG_(clo_verbosity) > 1) {
            VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: done:    "
                         "%lu syms, %lu src locs, %lu fpo recs\n",
                         di->symtab_used, di->loctab_used, di->fpo_size);
