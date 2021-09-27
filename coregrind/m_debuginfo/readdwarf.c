@@ -2527,11 +2527,16 @@ static Bool summarise_context(/*OUT*/Addr* base,
                                ctxs->reg[ctx->ra_reg] );
    SUMMARISE_HOW(si_m->bp_how, si_m->bp_off,
                                ctxs->reg[FP_REG] );
+   SUMMARISE_HOW(si_m->sp_how, si_m->sp_off,
+                               ctxs->reg[SP_REG] );
 
    /* on x86/amd64, it seems the old %{e,r}sp value before the call is
       always the same as the CFA.  Therefore ... */
-   si_m->sp_how = CFIR_CFAREL;
-   si_m->sp_off = 0;
+   if (ctxs->reg[SP_REG].tag == RR_Undef)
+   {
+      si_m->sp_how = CFIR_CFAREL;
+      si_m->sp_off = 0;
+   }
 
    /* also, gcc says "Undef" for %{e,r}bp when it is unchanged.  So
       .. */
