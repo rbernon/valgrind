@@ -1312,9 +1312,9 @@ HChar* find_buildid(DiImage* img, Bool rel_ok, Bool search_shdrs)
    spec of the form "d.d.d.d:d" or "d.d.d.d", and |name| is expected
    to be a plain filename (no path components at all).
  */
-static
-DiImage* open_debug_file( const HChar* name, const HChar* buildid, UInt crc,
-                          Bool rel_ok, const HChar* serverAddr )
+DiImage* ML_(open_debug_file)( const HChar* name, const HChar* buildid,
+                               UInt crc, Bool rel_ok,
+                               const HChar* serverAddr )
 {
    DiImage* dimg 
      = serverAddr ? ML_(img_from_di_server)(name, serverAddr)
@@ -1464,7 +1464,7 @@ DiImage* find_debug_file_debuginfod( const HChar* objpath,
 
       /* Remove newline from filename before trying to open debug file */
       buf[len-1] = '\0';
-      dimg = open_debug_file(buf, buildid, crc, rel_ok, NULL);
+      dimg = ML_(open_debug_file)(buf, buildid, crc, rel_ok, NULL);
       if (dimg != NULL) {
          /* Success */
          if (*debugpath)
@@ -1503,10 +1503,11 @@ out:
    debug object, then we look in various places to find a file with
    the specified CRC.  And if that doesn't work out then we give
    up. */
-static
-DiImage* find_debug_file( struct _DebugInfo* di,
-                          const HChar* objpath, const HChar* buildid,
-                          const HChar* debugname, UInt crc, Bool rel_ok )
+DiImage* ML_(find_debug_file)( struct _DebugInfo* di,
+                               const HChar* objpath,
+                               const HChar* buildid,
+                               const HChar* debugname,
+                               UInt crc, Bool rel_ok )
 {
    const HChar* extrapath  = VG_(clo_extra_debuginfo_path);
    const HChar* serverpath = VG_(clo_debuginfo_server);
@@ -1521,7 +1522,7 @@ DiImage* find_debug_file( struct _DebugInfo* di,
       VG_(sprintf)(debugpath, "/usr/lib/debug/.build-id/%c%c/%s.debug",
                    buildid[0], buildid[1], buildid + 2);
 
-      dimg = open_debug_file(debugpath, buildid, 0, rel_ok, NULL);
+      dimg = ML_(open_debug_file)(debugpath, buildid, 0, rel_ok, NULL);
       if (!dimg) {
          ML_(dinfo_free)(debugpath);
          debugpath = NULL;
@@ -1550,7 +1551,8 @@ DiImage* find_debug_file( struct _DebugInfo* di,
 #     define TRY_OBJDIR(format, ...)                                    \
       do {                                                              \
          VG_(sprintf)(debugpath, format, __VA_ARGS__);                  \
-         dimg = open_debug_file(debugpath, buildid, crc, rel_ok, NULL); \
+         dimg = ML_(open_debug_file)(debugpath, buildid,                \
+                                     crc, rel_ok, NULL);                \
          if (dimg != NULL) goto dimg_ok;                                \
       } while (0);
 
@@ -1586,7 +1588,8 @@ DiImage* find_debug_file( struct _DebugInfo* di,
             basename = VG_(strrchr)(basename, '/') + 1;
          }
          VG_(sprintf)(debugpath, "%s on %s", basename, serverpath);
-         dimg = open_debug_file(basename, buildid, crc, rel_ok, serverpath);
+         dimg = ML_(open_debug_file)(basename, buildid,
+                                     crc, rel_ok, serverpath);
          if (dimg) goto dimg_ok;
       }
 
@@ -1620,9 +1623,8 @@ DiImage* find_debug_file( struct _DebugInfo* di,
 /* Try to find a separate debug file for a given object file, in a
    hacky and dangerous way: check only the --extra-debuginfo-path and
    the --debuginfo-server.  And don't do a consistency check. */
-static
-DiImage* find_debug_file_ad_hoc( const DebugInfo* di,
-                                 const HChar* objpath )
+DiImage* ML_(find_debug_file_ad_hoc)( const DebugInfo* di,
+                                      const HChar* objpath )
 {
    const HChar* extrapath  = VG_(clo_extra_debuginfo_path);
    const HChar* serverpath = VG_(clo_debuginfo_server);
@@ -3033,14 +3035,14 @@ Bool ML_(read_elf_debug_info) ( struct _DebugInfo* di )
             HChar* debuglink_str_m
                = ML_(img_strdup)(debuglink_escn.img,
                                  "di.redi_dlk.1", debuglink_escn.ioff);
-            dimg = find_debug_file( di, di->fsm.filename, buildid,
-                                    debuglink_str_m, crc, False );
+            dimg = ML_(find_debug_file)( di, di->fsm.filename, buildid,
+                                         debuglink_str_m, crc, False );
             if (debuglink_str_m)
                ML_(dinfo_free)(debuglink_str_m);
          } else {
             /* See if we can find a matching debug file */
-            dimg = find_debug_file( di, di->fsm.filename, buildid,
-                                    NULL, 0, False );
+            dimg = ML_(find_debug_file)( di, di->fsm.filename, buildid,
+                                         NULL, 0, False );
          }
       }
 
@@ -3063,7 +3065,7 @@ Bool ML_(read_elf_debug_info) ( struct _DebugInfo* di )
          section here, and just looking for a file of the same name
          either the extra-path or on the server. */
       if (dimg == NULL && VG_(clo_allow_mismatched_debuginfo)) {
-         dimg = find_debug_file_ad_hoc( di, di->fsm.filename );
+         dimg = ML_(find_debug_file_ad_hoc)( di, di->fsm.filename );
       }
 
       /* TOPLEVEL */
@@ -3354,8 +3356,8 @@ Bool ML_(read_elf_debug_info) ( struct _DebugInfo* di )
                                         + buildid_offset + j));
 
          /* See if we can find a matching debug file */
-         aimg = find_debug_file( di, rdbgname, altbuildid,
-                                 altfile_str_m, 0, True );
+         aimg = ML_(find_debug_file)( di, rdbgname, altbuildid,
+                                      altfile_str_m, 0, True );
 
          ML_(dinfo_free)(rdbgname);
 

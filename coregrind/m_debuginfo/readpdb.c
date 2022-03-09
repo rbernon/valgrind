@@ -44,6 +44,7 @@
 #include "pub_core_libcprint.h"
 #include "pub_core_libcproc.h"     // VG_(getpid), system
 #include "pub_core_options.h"      // VG_(clo_verbosity)
+#include "pub_core_oset.h"
 #include "pub_core_xarray.h"       // keeps priv_storage.h happy
 #include "pub_core_redir.h"
 
@@ -52,6 +53,9 @@
 #include "priv_d3basics.h"
 #include "priv_storage.h"
 #include "priv_readpdb.h"          // self
+#include "priv_readelf.h"          /* open/find_debug_file/_ad_hoc */
+#include "priv_readdwarf.h"        /* 'cos ELF contains DWARF */
+#include "priv_readdwarf3.h"
 
 
 /*------------------------------------------------------------*/
@@ -2780,6 +2784,1062 @@ HChar* ML_(find_name_of_pdb_file)( const HChar* pename )
       VG_(unlink)( tmpname );
    }
    return res;
+}
+
+
+static
+Bool is_pe_object_file( const void* image, SizeT n_image, Bool rel_ok )
+{
+   const IMAGE_DOS_HEADER* dos_avma;
+   const IMAGE_NT_HEADERS* ntheaders_avma;
+
+   dos_avma = (const IMAGE_DOS_HEADER *)image;
+   if (dos_avma->e_magic != IMAGE_DOS_SIGNATURE)
+       return False;
+
+   ntheaders_avma
+      = (const IMAGE_NT_HEADERS *)(((const Char*)image) + dos_avma->e_lfanew);
+   if (ntheaders_avma->Signature != IMAGE_NT_SIGNATURE)
+      return False;
+
+   return True;
+}
+
+
+static
+Bool is_pe_object_file_by_DiImage( DiImage* img, Bool rel_ok )
+{
+   char buf[1024];
+
+   if (!ML_(img_valid)(img, 0, sizeof(buf)))
+      return False;
+
+   ML_(img_get)(buf, img, 0, sizeof(buf));
+   return is_pe_object_file( buf, sizeof(buf), rel_ok );
+}
+
+
+static
+int shdr_name_strcmp( DiImage *img, IMAGE_SECTION_HEADER *shdr,
+                      DiOffT strtab_off, const char *name )
+{
+   if (*shdr->Name != '/') return VG_(strcmp)((char *)shdr->Name, name);
+   Long n = VG_(strtoll10)((const char*)shdr->Name + 1, NULL);
+   return ML_(img_strcmp_c)(img, strtab_off + n, name);
+}
+
+
+static
+Int cmp_IMAGE_SYMBOL_by_section_value( const void* v1, const void* v2 )
+{
+   const IMAGE_SYMBOL* s1 = v1, *s2 = v2;
+   if (s1->SectionNumber != s2->SectionNumber)
+      return s1->SectionNumber - s2->SectionNumber;
+   if (s1->Value != s2->Value)
+      return s1->Value - s2->Value;
+   return 0;
+}
+
+
+Bool ML_(read_pe_debug_info) ( struct _DebugInfo* di, Addr obj_avma,
+                               PtrdiffT obj_bias )
+{
+   /* TOPLEVEL */
+   Bool     res, ok;
+   Word     i, n;
+
+   /* Image for the main PE file we're working with. */
+   DiImage* mimg = NULL;
+
+   /* Ditto for any PE debuginfo file that we might happen to load. */
+   DiImage* dimg = NULL;
+
+   /* Ditto for alternate PE debuginfo file that we might happen to load. */
+   DiImage* aimg = NULL;
+
+   /* Program header table image addr, # entries, entry size */
+   DiOffT   phdr_mioff    = 0;
+   UWord    phdr_mnent    = 0;
+   UWord    phdr_ment_szB = 0;
+
+   /* Section header image addr, # entries, entry size.  Also the
+      associated string table. */
+   DiOffT   shdr_mioff        = 0;
+   UWord    shdr_mnent        = 0;
+   UWord    shdr_ment_szB     = 0;
+
+   DiOffT   strtab_mioff = 0;
+
+   vg_assert(di);
+   vg_assert(di->have_dinfo == False);
+   vg_assert(di->fsm.filename);
+   vg_assert(!di->symtab);
+   vg_assert(!di->loctab);
+   vg_assert(!di->inltab);
+   vg_assert(!di->cfsi_base);
+   vg_assert(!di->cfsi_m_ix);
+   vg_assert(!di->cfsi_rd);
+   vg_assert(!di->cfsi_exprs);
+   vg_assert(!di->strpool);
+   vg_assert(!di->fndnpool);
+   vg_assert(!di->soname);
+
+   res = False;
+
+   /* Connect to the primary object image, so that we can read symbols
+      and line number info out of it.  It will be disconnected
+      immediately thereafter; it is only connected transiently. */
+   mimg = ML_(img_from_local_file)(di->fsm.filename);
+   if (mimg == NULL) {
+      VG_(message)(Vg_UserMsg, "warning: connection to image %s failed\n",
+                               di->fsm.filename );
+      VG_(message)(Vg_UserMsg, "         no symbols or debug info loaded\n" );
+      return False;
+   }
+
+   /* Ok, the object image is available.  Now verify that it is a
+      valid PE. */
+   ok = is_pe_object_file_by_DiImage(mimg, False);
+   if (!ok)
+      goto out;
+
+   if (VG_(clo_verbosity) > 1 || VG_(clo_trace_redir))
+      VG_(message)(Vg_DebugMsg, "Reading syms from %s\n",
+                                di->fsm.filename );
+
+   /* Find where the program and section header tables are, and give
+      up if either is missing or outside the image (bogus). */
+   IMAGE_DOS_HEADER dos_hdr;
+   ok = ML_(img_valid)(mimg, 0, sizeof(dos_hdr));
+   vg_assert(ok); // ML_(is_pe_object_file) should ensure this
+   ML_(img_get)(&dos_hdr, mimg, 0, sizeof(dos_hdr));
+
+   IMAGE_NT_HEADERS nt_hdr;
+   ok = ML_(img_valid)(mimg, dos_hdr.e_lfanew, sizeof(nt_hdr));
+   vg_assert(ok); // ML_(is_pe_object_file) should ensure this
+   ML_(img_get)(&nt_hdr, mimg, dos_hdr.e_lfanew, sizeof(nt_hdr));
+
+   phdr_mioff    = dos_hdr.e_lfanew;
+   phdr_mnent    = 1;
+   phdr_ment_szB = OFFSET_OF(IMAGE_NT_HEADERS, OptionalHeader)
+                   + nt_hdr.FileHeader.SizeOfOptionalHeader;
+
+   shdr_mioff    = phdr_mioff + phdr_ment_szB;
+   shdr_mnent    = nt_hdr.FileHeader.NumberOfSections;
+   shdr_ment_szB = sizeof(IMAGE_SECTION_HEADER);
+
+   if (nt_hdr.FileHeader.PointerToSymbolTable
+       && nt_hdr.FileHeader.NumberOfSymbols)
+   {
+      strtab_mioff = nt_hdr.FileHeader.PointerToSymbolTable
+                     + nt_hdr.FileHeader.NumberOfSymbols * sizeof(IMAGE_SYMBOL);
+   }
+
+   TRACE_SYMTAB("------ Basic facts about the object ------\n");
+   TRACE_SYMTAB("object:  n_oimage %llu\n",
+                (ULong)ML_(img_size)(mimg));
+   TRACE_SYMTAB("phdr:    ioff %llu nent %lu ent_szB %lu\n",
+               phdr_mioff, phdr_mnent, phdr_ment_szB);
+   TRACE_SYMTAB("shdr:    ioff %llu nent %lu ent_szB %lu\n",
+               shdr_mioff, shdr_mnent, shdr_ment_szB);
+   for (i = 0; i < VG_(sizeXA)(di->fsm.maps); i++) {
+      const DebugInfoMapping* map = VG_(indexXA)(di->fsm.maps, i);
+      if (map->rx)
+         TRACE_SYMTAB("rx_map:  avma %#lx   size %lu  foff %ld\n",
+                      map->avma, map->size, map->foff);
+   }
+   for (i = 0; i < VG_(sizeXA)(di->fsm.maps); i++) {
+      const DebugInfoMapping* map = VG_(indexXA)(di->fsm.maps, i);
+      if (map->rw)
+         TRACE_SYMTAB("rw_map:  avma %#lx   size %lu  foff %ld\n",
+                      map->avma, map->size, map->foff);
+   }
+
+   if (phdr_mnent == 0
+       || !ML_(img_valid)(mimg, phdr_mioff, phdr_mnent * phdr_ment_szB)) {
+      ML_(symerr)(di, True, "Missing or invalid PE Program Header Table");
+      goto out;
+   }
+
+   if (shdr_mnent == 0
+       || !ML_(img_valid)(mimg, shdr_mioff, shdr_mnent * shdr_ment_szB)) {
+      ML_(symerr)(di, True, "Missing or invalid PE Section Header Table");
+      goto out;
+   }
+
+   TRACE_SYMTAB("shdr:    string table at %llu\n", strtab_mioff);
+
+   /* TOPLEVEL */
+   /* Look through the program header table, and:
+      - find (or fake up) the .soname for this object.
+   */
+   TRACE_SYMTAB("\n");
+   TRACE_SYMTAB("------ Examining the program headers ------\n");
+   vg_assert(di->soname == NULL);
+
+   {
+      /* TOPLEVEL */
+      DWORD prev_svma = 0;
+
+      for (i = 0; i < shdr_mnent; i++) {
+         IMAGE_SECTION_HEADER a_shdr;
+         ML_(img_get)(&a_shdr, mimg, shdr_mioff + i * shdr_ment_szB, sizeof(a_shdr));
+
+         if (a_shdr.Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) continue;
+
+         TRACE_SYMTAB("PT_LOAD[%ld]: p_vaddr %#lx (prev %#lx)\n",
+                      i, (UWord)a_shdr.VirtualAddress, (UWord)prev_svma);
+         TRACE_SYMTAB("PT_LOAD[%ld]:   p_offset %lu, p_filesz %lu,"
+                      " perms %c%c%c\n",
+                      i, (UWord)a_shdr.PointerToRawData, (UWord)a_shdr.SizeOfRawData,
+                      a_shdr.Characteristics & IMAGE_SCN_MEM_READ ? 'r' : '-',
+                      a_shdr.Characteristics & IMAGE_SCN_MEM_WRITE ? 'w' : '-',
+                      a_shdr.Characteristics & IMAGE_SCN_MEM_EXECUTE ? 'x' : '-');
+         if (a_shdr.VirtualAddress < prev_svma) {
+            ML_(symerr)(di, True, "PE Sections are not in ascending order");
+            goto out;
+         }
+         prev_svma = a_shdr.VirtualAddress;
+
+         DebugInfoMapping map;
+         map.avma = (Addr)obj_avma + a_shdr.VirtualAddress;
+         map.size = a_shdr.Misc.VirtualSize;
+         map.foff = a_shdr.PointerToRawData;
+         map.ro   = False;
+         map.rx   = False;
+         map.rw   = False;
+
+         if (a_shdr.Misc.VirtualSize == 0) continue;
+
+         DWORD rx_mask = (IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE);
+         DWORD rw_mask = (IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE);
+         DWORD mask = rx_mask | rw_mask;
+         if ((a_shdr.Characteristics & mask) == rw_mask) {
+            map.rw   = True;
+            VG_(addToXA)(di->fsm.maps, &map);
+            di->fsm.rw_map_count += 1;
+            TRACE_SYMTAB("PT_LOAD[%ld]:   acquired as rw\n", i);
+         }
+         else if ((a_shdr.Characteristics & mask) == rx_mask) {
+            map.rx   = True;
+            VG_(addToXA)(di->fsm.maps, &map);
+            di->fsm.have_rx_map = True;
+            TRACE_SYMTAB("PT_LOAD[%ld]:   acquired as rx\n", i);
+         }
+         else if ((a_shdr.Characteristics & mask) == IMAGE_SCN_MEM_READ) {
+            map.ro   = True;
+            VG_(addToXA)(di->fsm.maps, &map);
+            TRACE_SYMTAB("PT_LOAD[%ld]:   acquired as ro\n", i);
+         } else {
+            VG_(addToXA)(di->fsm.maps, &map);
+            TRACE_SYMTAB("PT_LOAD[%ld]:   acquired\n", i);
+         }
+      } /* for (i = 0; i < phdr_Mnent; i++) ... */
+
+      for (i = 0; i < shdr_mnent; i++) {
+         IMAGE_SECTION_HEADER a_shdr;
+         ML_(img_get)(&a_shdr, mimg, shdr_mioff + i * shdr_ment_szB, sizeof(a_shdr));
+
+         /* Try to get the soname.  If there isn't one, use "NONE".
+            The seginfo needs to have some kind of soname in order to
+            facilitate writing redirect functions, since all redirect
+            specifications require a soname (pattern). */
+         if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".edata")
+             && di->soname == NULL) {
+            IMAGE_EXPORT_DIRECTORY a_edir;
+            ML_(img_get)(&a_edir, mimg, a_shdr.PointerToRawData, sizeof(a_edir));
+
+            if (a_edir.Name >= a_shdr.VirtualAddress
+                && a_edir.Name + sizeof(DWORD)
+                   <= a_shdr.VirtualAddress + a_shdr.Misc.VirtualSize) {
+               di->soname = ML_(img_strdup)(mimg, "di.redi.1",
+                                            a_shdr.PointerToRawData
+                                            + a_edir.Name - a_shdr.VirtualAddress);
+               TRACE_SYMTAB("Found soname = %s\n", di->soname);
+            }
+         }
+      } /* for (i = 0; i < phdr_Mnent; i++) ... */
+      /* TOPLEVEL */
+
+   } /* examine the program headers (local scope) */
+
+   /* TOPLEVEL */
+
+   if (!di->fsm.have_rx_map) goto out;
+
+   di->fsm.rw_map_count = di->fsm.rw_map_count ? di->fsm.rw_map_count : 1;
+
+   /* If, after looking at all the program headers, we still didn't
+      find a soname, add a fake one. */
+   if (di->soname == NULL) {
+      TRACE_SYMTAB("No soname found; using (fake) \"NONE\"\n");
+      di->soname = ML_(dinfo_strdup)("di.redi.2", "NONE");
+   }
+
+   /* Now read the section table. */
+   TRACE_SYMTAB("\n");
+   TRACE_SYMTAB("------ Examining the section headers ------\n");
+   for (i = 0; i < VG_(sizeXA)(di->fsm.maps); i++) {
+      const DebugInfoMapping* map = VG_(indexXA)(di->fsm.maps, i);
+      if (map->rx)
+         TRACE_SYMTAB("rx: at %#lx are mapped foffsets %ld .. %lu\n",
+                      map->avma, map->foff, map->foff + map->size - 1 );
+   }
+   for (i = 0; i < VG_(sizeXA)(di->fsm.maps); i++) {
+      const DebugInfoMapping* map = VG_(indexXA)(di->fsm.maps, i);
+      if (map->rw)
+         TRACE_SYMTAB("rw: at %#lx are mapped foffsets %ld .. %lu\n",
+                      map->avma, map->foff, map->foff + map->size - 1 );
+   }
+
+   /* TOPLEVEL */
+   /* Iterate over section headers */
+   for (i = 0; i < shdr_mnent; i++) {
+      IMAGE_SECTION_HEADER a_shdr;
+      ML_(img_get)(&a_shdr, mimg, shdr_mioff + i * shdr_ment_szB, sizeof(a_shdr));
+
+      HChar* name = (HChar*)a_shdr.Name;
+      Addr   svma = obj_avma + a_shdr.VirtualAddress;
+      OffT   foff = a_shdr.PointerToRawData;
+      UWord  size = a_shdr.Misc.VirtualSize;
+
+      TRACE_SYMTAB(" [sec %2ld]  foff %6ld .. %6lu  "
+                   "  svma %p  name \"%s\"\n",
+                   i, foff, (size == 0) ? foff : foff+size-1, (void *) svma, name);
+
+      /* Ignore zero sized sections. */
+      if (size == 0) {
+         TRACE_SYMTAB("zero sized section \"%s\", ignoring\n", name);
+         continue;
+      }
+
+#     define BAD(_secname)                                 \
+         do { ML_(symerr)(di, True,                        \
+                          "Can't make sense of " _secname  \
+                          " section mapping");             \
+              /* make sure we don't assert if we find */   \
+              /* ourselves back in this routine later, */  \
+              /* with the same di */                       \
+              di->soname = NULL;                           \
+              goto out;                                    \
+         } while (0)
+
+      /* Find avma-s for: .text .data .rodata .bss and .eh_frame */
+
+      /* Accept .text where mapped as rx (code), even if zero-sized */
+      if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".text")) {
+         if (!di->text_present) {
+            di->text_present = True;
+            di->text_svma = svma;
+            di->text_avma = svma;
+            di->text_size = size;
+            di->text_bias = 0;
+            di->text_debug_svma = svma;
+            di->text_debug_bias = 0;
+            TRACE_SYMTAB("acquiring .text svma = %#lx .. %#lx\n",
+                         di->text_svma,
+                         di->text_svma + di->text_size - 1);
+            TRACE_SYMTAB("acquiring .text avma = %#lx .. %#lx\n",
+                         di->text_avma,
+                         di->text_avma + di->text_size - 1);
+            TRACE_SYMTAB("acquiring .text bias = %#lx debug %#lx\n",
+                         (UWord)di->text_bias, (UWord)di->text_debug_bias);
+         } else {
+            BAD(".text");
+         }
+      }
+
+      /* Accept .data where mapped as rw (data), even if zero-sized */
+      if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".data")) {
+         if (!di->data_present) {
+            di->data_present = True;
+            di->data_svma = svma;
+            di->data_avma = svma;
+            di->data_size = size;
+            di->data_bias = 0;
+            di->data_debug_svma = svma;
+            di->data_debug_bias = 0;
+            TRACE_SYMTAB("acquiring .data svma = %#lx .. %#lx\n",
+                         di->data_svma,
+                         di->data_svma + di->data_size - 1);
+            TRACE_SYMTAB("acquiring .data avma = %#lx .. %#lx\n",
+                         di->data_avma,
+                         di->data_avma + di->data_size - 1);
+            TRACE_SYMTAB("acquiring .data bias = %#lx\n", (UWord)di->data_bias);
+         } else {
+            BAD(".data");
+         }
+      }
+
+      /* Accept .rodata where mapped as rx or rw (data), even if zero-sized */
+      if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".rodata")) {
+         if (!di->rodata_present) {
+            di->rodata_svma = svma;
+            di->rodata_avma = svma;
+            di->rodata_size = size;
+            di->rodata_debug_svma = svma;
+            di->rodata_bias = 0;
+            di->rodata_debug_bias = 0;
+            di->rodata_present = True;
+            TRACE_SYMTAB("acquiring .rodata svma = %#lx .. %#lx\n",
+                         di->rodata_svma,
+                         di->rodata_svma + di->rodata_size - 1);
+            TRACE_SYMTAB("acquiring .rodata avma = %#lx .. %#lx\n",
+                         di->rodata_avma,
+                         di->rodata_avma + di->rodata_size - 1);
+            TRACE_SYMTAB("acquiring .rodata bias = %#lx\n",
+                         (UWord)di->rodata_bias);
+         } else {
+            BAD(".rodata");
+         }
+      }
+
+      /* Accept .bss where mapped as rw (data), even if zero-sized */
+      if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".bss")) {
+         if (!di->bss_present) {
+            di->bss_present = True;
+            di->bss_svma = svma;
+            di->bss_avma = svma;
+            di->bss_size = size;
+            di->bss_bias = 0;
+            di->bss_debug_svma = svma;
+            di->bss_debug_bias = 0;
+            TRACE_SYMTAB("acquiring .bss svma = %#lx .. %#lx\n",
+                         di->bss_svma,
+                         di->bss_svma + di->bss_size - 1);
+            TRACE_SYMTAB("acquiring .bss avma = %#lx .. %#lx\n",
+                         di->bss_avma,
+                         di->bss_avma + di->bss_size - 1);
+            TRACE_SYMTAB("acquiring .bss bias = %#lx\n",
+                         (UWord)di->bss_bias);
+         } else {
+            BAD(".bss");
+         }
+      }
+
+      /* Accept .eh_frame where mapped as rx (code).  This seems to be
+         the common case.  However, if that doesn't pan out, try for
+         rw (data) instead.  We can handle up to N_EHFRAME_SECTS per
+         PE object. */
+      if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, ".eh_frame")) {
+         if (di->n_ehframe < N_EHFRAME_SECTS) {
+            di->ehframe_avma[di->n_ehframe] = svma;
+            di->ehframe_size[di->n_ehframe] = size;
+            TRACE_SYMTAB("acquiring .eh_frame avma = %#lx\n",
+                         di->ehframe_avma[di->n_ehframe]);
+            di->n_ehframe++;
+         } else {
+            BAD(".eh_frame");
+         }
+      }
+
+#     undef BAD
+
+   } /* iterate over the section headers */
+
+   /* TOPLEVEL */
+   if (0) VG_(printf)("YYYY text_: avma %#lx  size %lu  bias %#lx\n",
+                      di->text_avma, di->text_size, (UWord)di->text_bias);
+
+   if (VG_(clo_verbosity) > 2 || VG_(clo_trace_redir))
+      VG_(message)(Vg_DebugMsg, "   svma %#010lx, avma %#010lx\n",
+                                di->text_avma - di->text_bias,
+                                di->text_avma );
+
+   TRACE_SYMTAB("\n");
+   TRACE_SYMTAB("------ Finding image addresses "
+                "for debug-info sections ------\n");
+
+   /* TOPLEVEL */
+   /* Find interesting sections, read the symbol table(s), read any
+      debug information.  Each section is located either in the main,
+      debug or alt-debug files, but only in one.  For each section,
+      |section_escn| records which of |mimg|, |dimg| or |aimg| we
+      found it in, along with the section's image offset and its size.
+      The triples (section_img, section_ioff, section_szB) are
+      consistent, in that they are always either (NULL,
+      DiOffT_INVALID, 0), or refer to the same image, and are all
+      assigned together. */
+   {
+      /* TOPLEVEL */
+      DiSlice debuglink_escn      = DiSlice_INVALID; // .gnu_debuglink
+      DiSlice debug_line_escn     = DiSlice_INVALID; // .debug_line   (dwarf2)
+      DiSlice debug_info_escn     = DiSlice_INVALID; // .debug_info   (dwarf2)
+      DiSlice debug_types_escn    = DiSlice_INVALID; // .debug_types  (dwarf4)
+      DiSlice debug_abbv_escn     = DiSlice_INVALID; // .debug_abbrev (dwarf2)
+      DiSlice debug_str_escn      = DiSlice_INVALID; // .debug_str    (dwarf2)
+      DiSlice debug_line_str_escn = DiSlice_INVALID; // .debug_line_str(dwarf5)
+      DiSlice debug_ranges_escn   = DiSlice_INVALID; // .debug_ranges (dwarf2)
+      DiSlice debug_rnglists_escn = DiSlice_INVALID; // .debug_rnglists(dwarf5)
+      DiSlice debug_loclists_escn = DiSlice_INVALID; // .debug_loclists(dwarf5)
+      DiSlice debug_addr_escn     = DiSlice_INVALID; // .debug_addr   (dwarf5)
+      DiSlice debug_str_offsets_escn = DiSlice_INVALID; // .debug_str_offsets (dwarf5)
+      DiSlice debug_loc_escn      = DiSlice_INVALID; // .debug_loc    (dwarf2)
+      DiSlice debug_frame_escn    = DiSlice_INVALID; // .debug_frame  (dwarf2)
+      DiSlice debug_line_alt_escn = DiSlice_INVALID; // .debug_line   (alt)
+      DiSlice debug_info_alt_escn = DiSlice_INVALID; // .debug_info   (alt)
+      DiSlice debug_abbv_alt_escn = DiSlice_INVALID; // .debug_abbrev (alt)
+      DiSlice debug_str_alt_escn  = DiSlice_INVALID; // .debug_str    (alt)
+      DiSlice dwarf1d_escn        = DiSlice_INVALID; // .debug        (dwarf1)
+      DiSlice dwarf1l_escn        = DiSlice_INVALID; // .line         (dwarf1)
+      DiSlice ehframe_escn[N_EHFRAME_SECTS];         // .eh_frame (dwarf2)
+
+      for (i = 0; i < N_EHFRAME_SECTS; i++)
+         ehframe_escn[i] = DiSlice_INVALID;
+
+      /* Find all interesting sections */
+
+      UInt ehframe_mix = 0;
+
+      /* What FIND does: it finds the section called _SEC_NAME.  The
+         size of it is assigned to _SEC_SIZE.  The address of the
+         section in the transiently loaded oimage is assigned to
+         _SEC_IMG.  If the section is found, _POST_FX is executed
+         after _SEC_NAME and _SEC_SIZE have been assigned to.
+
+         Even for sections which are marked loadable, the client's
+         ld.so may not have loaded them yet, so there is no guarantee
+         that we can safely prod around in any such area).  Because
+         the entire object file is transiently mapped aboard for
+         inspection, it's always safe to inspect that area. */
+
+      /* TOPLEVEL */
+      /* Iterate over section headers (again) */
+      for (i = 0; i < shdr_mnent; i++) {
+
+#        define FINDX(_sec_name, _sec_escn, _post_fx) \
+         do { \
+            IMAGE_SECTION_HEADER a_shdr; \
+            ML_(img_get)(&a_shdr, mimg, \
+                         shdr_mioff + i * shdr_ment_szB, \
+                         sizeof(a_shdr)); \
+            if (0 == shdr_name_strcmp(mimg, &a_shdr, strtab_mioff, _sec_name)) { \
+               _sec_escn.img  = mimg; \
+               _sec_escn.ioff = (DiOffT)a_shdr.PointerToRawData; \
+               _sec_escn.szB  = a_shdr.Misc.VirtualSize; \
+               vg_assert(_sec_escn.img  != NULL); \
+               vg_assert(_sec_escn.ioff != DiOffT_INVALID); \
+               TRACE_SYMTAB( "%-18s:  ioff %llu .. %llu\n", \
+                             _sec_name, (ULong)a_shdr.PointerToRawData, \
+                             ((ULong)a_shdr.PointerToRawData) + a_shdr.Misc.VirtualSize - 1); \
+               /* SHT_NOBITS sections have zero size in the file. */ \
+               if (a_shdr.PointerToRawData + \
+                      a_shdr.Misc.VirtualSize > ML_(img_real_size)(mimg)) { \
+                  ML_(symerr)(di, True, \
+                              "   section beyond image end?!"); \
+                  goto out; \
+               } \
+               _post_fx; \
+            } \
+         } while (0);
+
+         /* Version with no post-effects */
+#        define FIND(_sec_name, _sec_escn) \
+            FINDX(_sec_name, _sec_escn, /**/)
+
+         /*      NAME                  ElfSec */
+         FIND(   ".gnu_debuglink",     debuglink_escn)
+
+         FIND(   ".debug_line",        debug_line_escn)
+         if (!ML_(sli_is_valid)(debug_line_escn))
+            FIND(".zdebug_line",       debug_line_escn)
+
+         FIND(   ".debug_info",        debug_info_escn)
+         if (!ML_(sli_is_valid)(debug_info_escn))
+            FIND(".zdebug_info",       debug_info_escn)
+
+         FIND(   ".debug_types",       debug_types_escn)
+         if (!ML_(sli_is_valid)(debug_types_escn))
+            FIND(".zdebug_types",      debug_types_escn)
+
+         FIND(   ".debug_abbrev",      debug_abbv_escn)
+         if (!ML_(sli_is_valid)(debug_abbv_escn))
+            FIND(".zdebug_abbrev",     debug_abbv_escn)
+
+         FIND(   ".debug_str",         debug_str_escn)
+         if (!ML_(sli_is_valid)(debug_str_escn))
+            FIND(".zdebug_str",        debug_str_escn)
+
+         FIND(   ".debug_line_str",    debug_line_str_escn)
+         if (!ML_(sli_is_valid)(debug_line_str_escn))
+            FIND(".zdebug_line_str",   debug_line_str_escn)
+
+         FIND(   ".debug_ranges",      debug_ranges_escn)
+         if (!ML_(sli_is_valid)(debug_ranges_escn))
+            FIND(".zdebug_ranges",     debug_ranges_escn)
+
+         FIND(   ".debug_rnglists",    debug_rnglists_escn)
+         if (!ML_(sli_is_valid)(debug_rnglists_escn))
+            FIND(".zdebug_rnglists",   debug_rnglists_escn)
+
+         FIND(   ".debug_loclists",    debug_loclists_escn)
+         if (!ML_(sli_is_valid)(debug_loclists_escn))
+            FIND(".zdebug_loclists",   debug_loclists_escn)
+
+         FIND(   ".debug_loc",         debug_loc_escn)
+         if (!ML_(sli_is_valid)(debug_loc_escn))
+            FIND(".zdebug_loc",    debug_loc_escn)
+
+         FIND(   ".debug_frame",       debug_frame_escn)
+         if (!ML_(sli_is_valid)(debug_frame_escn))
+            FIND(".zdebug_frame",      debug_frame_escn)
+
+         FIND(   ".debug_addr",        debug_addr_escn)
+         if (!ML_(sli_is_valid)(debug_addr_escn))
+            FIND(".zdebug_addr",       debug_addr_escn)
+
+         FIND(   ".debug_str_offsets", debug_str_offsets_escn)
+         if (!ML_(sli_is_valid)(debug_str_offsets_escn))
+            FIND(".zdebug_str_offsets", debug_str_offsets_escn)
+
+         FIND(   ".debug",             dwarf1d_escn)
+         FIND(   ".line",              dwarf1l_escn)
+
+         FINDX(  ".eh_frame",          ehframe_escn[ehframe_mix],
+               do { ehframe_mix++; vg_assert(ehframe_mix <= N_EHFRAME_SECTS);
+               } while (0)
+         )
+         /* Comment_on_EH_FRAME_MULTIPLE_INSTANCES: w.r.t. .eh_frame
+            multi-instance kludgery, how are we assured that the order
+            in which we fill in ehframe_escn[] is consistent with the
+            order in which we previously filled in di->ehframe_avma[]
+            and di->ehframe_size[] ?  By the fact that in both cases,
+            these arrays were filled in by iterating over the section
+            headers top-to-bottom.  So both loops (this one and the
+            previous one) encounter the .eh_frame entries in the same
+            order and so fill in these arrays in a consistent order.
+         */
+
+#        undef FINDX
+#        undef FIND
+      } /* Iterate over section headers (again) */
+
+      /* TOPLEVEL */
+      /* Now, see if we can find a debuginfo object, and if so connect
+         |dimg| to it. */
+      vg_assert(dimg == NULL && aimg == NULL);
+
+      /* Look for a debug image that matches either the build-id or
+         the debuglink-CRC32 in the main image.  If the main image
+         doesn't contain either of those then this won't even bother
+         to try looking.  This looks in all known places, including
+         the --extra-debuginfo-path if specified and on the
+         --debuginfo-server if specified. */
+      if (debuglink_escn.img != NULL) {
+         UInt crc_offset
+            = VG_ROUNDUP(ML_(img_strlen)(debuglink_escn.img,
+                                         debuglink_escn.ioff)+1, 4);
+         vg_assert(crc_offset + sizeof(UInt) <= debuglink_escn.szB);
+
+         /* Extract the CRC from the debuglink section */
+         UInt crc = ML_(img_get_UInt)(debuglink_escn.img,
+                                      debuglink_escn.ioff + crc_offset);
+
+         /* See if we can find a matching debug file */
+         HChar* debuglink_str_m
+            = ML_(img_strdup)(debuglink_escn.img,
+                              "di.redi_dlk.1", debuglink_escn.ioff);
+         dimg = ML_(find_debug_file)( di, di->fsm.filename, NULL,
+                                      debuglink_str_m, crc, False );
+         if (debuglink_str_m)
+            ML_(dinfo_free)(debuglink_str_m);
+      } else {
+         /* See if we can find a matching debug file */
+         dimg = ML_(find_debug_file)( di, di->fsm.filename, NULL,
+                                      NULL, 0, False );
+      }
+
+      /* As a last-ditch measure, try looking for in the
+         --extra-debuginfo-path and/or on the --debuginfo-server, but
+         only in the case where --allow-mismatched-debuginfo=yes.
+         This is dangerous in that (1) it gives no assurance that the
+         debuginfo object matches the main one, and hence (2) we will
+         very likely get an assertion in the code below, if indeed
+         there is a mismatch.  Hence it is disabled by default
+         (--allow-mismatched-debuginfo=no).  Nevertheless it's
+         sometimes a useful way of getting out of a tight spot.
+
+         Note that we're ignoring the name in the .gnu_debuglink
+         section here, and just looking for a file of the same name
+         either the extra-path or on the server. */
+      if (dimg == NULL && VG_(clo_allow_mismatched_debuginfo)) {
+         dimg = ML_(find_debug_file_ad_hoc)( di, di->fsm.filename );
+      }
+
+      /* TOPLEVEL */
+      /* If we were successful in finding a debug image, pull various
+         SVMA/bias/size and image addresses out of it. */
+      if (dimg != NULL && is_pe_object_file_by_DiImage(dimg, False)) {
+
+         /* Pull out and validate program header and section header info */
+         IMAGE_DOS_HEADER dos_hdr_dimg;
+         ML_(img_get)(&dos_hdr_dimg, dimg, 0, sizeof(dos_hdr_dimg));
+
+         IMAGE_NT_HEADERS nt_hdr_dimg;
+         ML_(img_get)(&nt_hdr_dimg, dimg, dos_hdr_dimg.e_lfanew, sizeof(nt_hdr_dimg));
+
+         DiOffT   phdr_dioff        = dos_hdr_dimg.e_lfanew;
+         UWord    phdr_dnent        = 1;
+         UWord    phdr_dent_szB     = OFFSET_OF(IMAGE_NT_HEADERS, OptionalHeader)
+                                      + nt_hdr_dimg.FileHeader.SizeOfOptionalHeader;
+
+         DiOffT   shdr_dioff        = phdr_dioff + phdr_dent_szB;
+         UWord    shdr_dnent        = nt_hdr_dimg.FileHeader.NumberOfSections;
+         UWord    shdr_dent_szB     = sizeof(IMAGE_SECTION_HEADER);
+
+         DiOffT   strtab_dioff = 0;
+         if (nt_hdr_dimg.FileHeader.PointerToSymbolTable
+             && nt_hdr_dimg.FileHeader.NumberOfSymbols)
+         {
+             strtab_dioff = nt_hdr_dimg.FileHeader.PointerToSymbolTable
+                            + nt_hdr_dimg.FileHeader.NumberOfSymbols * sizeof(IMAGE_SYMBOL);
+         }
+
+         PtrdiffT obj_dsmva;
+         if (nt_hdr_dimg.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            obj_dsmva = ((IMAGE_OPTIONAL_HEADER64 *)&nt_hdr_dimg.OptionalHeader)->ImageBase;
+         else
+            obj_dsmva = ((IMAGE_OPTIONAL_HEADER32 *)&nt_hdr_dimg.OptionalHeader)->ImageBase;
+
+         Bool need_dwarf2, need_dwarf1;
+
+         if (phdr_dnent == 0
+             || !ML_(img_valid)(dimg, phdr_dioff,
+                                phdr_dnent * phdr_dent_szB)) {
+            ML_(symerr)(di, True,
+                        "Missing or invalid PE Program Header Table"
+                        " (debuginfo file)");
+            goto out;
+         }
+
+         if (shdr_dnent == 0
+             || !ML_(img_valid)(dimg, shdr_dioff,
+                                shdr_dnent * shdr_dent_szB)) {
+            ML_(symerr)(di, True,
+                        "Missing or invalid PE Section Header Table"
+                        " (debuginfo file)");
+            goto out;
+         }
+
+         need_dwarf2 = (debug_info_escn.img == NULL);
+         need_dwarf1 = (dwarf1d_escn.img == NULL);
+
+         /* Find all interesting sections in the debug image */
+         for (i = 0; i < shdr_dnent; i++) {
+
+            /* Find debug svma and bias information for sections
+               we found in the main file. */
+
+#           define FIND(_sec, _seg) \
+            do { \
+               IMAGE_SECTION_HEADER a_shdr; \
+               ML_(img_get)(&a_shdr, dimg, shdr_dioff + i * shdr_dent_szB,  \
+                              sizeof(a_shdr)); \
+               if (di->_sec##_present \
+                   && 0 == shdr_name_strcmp(dimg, &a_shdr, strtab_dioff, "." #_sec)) { \
+                  vg_assert(di->_sec##_size == a_shdr.Misc.VirtualSize); \
+                  /* Assume we have a correct value for the main */ \
+                  /* object's bias.  Use that to derive the debuginfo */ \
+                  /* object's bias, by adding the difference in SVMAs */ \
+                  /* for the corresponding sections in the two files. */ \
+                  /* That should take care of all prelinking effects. */ \
+                  di->_sec##_debug_svma = obj_dsmva + a_shdr.VirtualAddress; \
+                  di->_sec##_debug_bias \
+                     = di->_sec##_bias + \
+                       di->_sec##_svma - di->_sec##_debug_svma; \
+                  TRACE_SYMTAB("acquiring ." #_sec \
+                               " debug svma = %#lx .. %#lx\n",       \
+                               di->_sec##_debug_svma, \
+                               di->_sec##_debug_svma + di->_sec##_size - 1); \
+                  TRACE_SYMTAB("acquiring ." #_sec " debug bias = %#lx\n", \
+                               (UWord)di->_sec##_debug_bias);           \
+               } \
+            } while (0);
+
+            /* SECTION   SEGMENT */
+            FIND(text,   rx)
+            FIND(data,   rw)
+            FIND(sdata,  rw)
+            FIND(rodata, rw)
+            FIND(bss,    rw)
+            FIND(sbss,   rw)
+
+#           undef FIND
+
+            /* Same deal as previous FIND, except only do it for those
+               sections which we didn't find in the main file. */
+
+#           define FIND(_condition, _sec_name, _sec_escn) \
+            do { \
+               IMAGE_SECTION_HEADER a_shdr; \
+               ML_(img_get)(&a_shdr, dimg, shdr_dioff + i * shdr_dent_szB,  \
+                              sizeof(a_shdr)); \
+               if (_condition \
+                   && 0 == shdr_name_strcmp(dimg, &a_shdr, strtab_dioff, _sec_name)) { \
+                  if (_sec_escn.img != NULL) { \
+                     ML_(symerr)(di, True, \
+                                 "   debuginfo section duplicates a" \
+                                 " section in the main ELF file"); \
+                     goto out; \
+                  } \
+                  _sec_escn.img  = dimg; \
+                  _sec_escn.ioff = (DiOffT)a_shdr.PointerToRawData;  \
+                  _sec_escn.szB  = a_shdr.Misc.VirtualSize; \
+                  vg_assert(_sec_escn.img  != NULL); \
+                  vg_assert(_sec_escn.ioff != DiOffT_INVALID); \
+                  TRACE_SYMTAB( "%-18s: dioff %llu .. %llu\n", \
+                                _sec_name, \
+                                (ULong)a_shdr.PointerToRawData, \
+                                ((ULong)a_shdr.PointerToRawData) + a_shdr.Misc.VirtualSize - 1); \
+                  if (a_shdr.PointerToRawData \
+                      + a_shdr.Misc.VirtualSize > ML_(img_real_size)(_sec_escn.img)) { \
+                     ML_(symerr)(di, True, \
+                                 "   section beyond image end?!"); \
+                     goto out; \
+                  } \
+               } \
+            } while (0);
+
+            /* NEEDED?               NAME                 ElfSec */
+            FIND(   need_dwarf2,     ".debug_line",       debug_line_escn)
+            if (!ML_(sli_is_valid)(debug_line_escn))
+               FIND(need_dwarf2,     ".zdebug_line",      debug_line_escn)
+
+            FIND(   need_dwarf2,     ".debug_info",       debug_info_escn)
+            if (!ML_(sli_is_valid)(debug_info_escn))
+               FIND(need_dwarf2,     ".zdebug_info",      debug_info_escn)
+
+            FIND(   need_dwarf2,     ".debug_types",      debug_types_escn)
+            if (!ML_(sli_is_valid)(debug_types_escn))
+               FIND(need_dwarf2,     ".zdebug_types",     debug_types_escn)
+
+            FIND(   need_dwarf2,     ".debug_abbrev",     debug_abbv_escn)
+            if (!ML_(sli_is_valid)(debug_abbv_escn))
+               FIND(need_dwarf2,     ".zdebug_abbrev",    debug_abbv_escn)
+
+            FIND(   need_dwarf2,     ".debug_str",        debug_str_escn)
+            if (!ML_(sli_is_valid)(debug_str_escn))
+               FIND(need_dwarf2,     ".zdebug_str",       debug_str_escn)
+
+            FIND(   need_dwarf2,     ".debug_line_str",   debug_line_str_escn)
+            if (!ML_(sli_is_valid)(debug_line_str_escn))
+               FIND(need_dwarf2,     ".zdebug_line_str",  debug_line_str_escn)
+
+            FIND(   need_dwarf2,     ".debug_ranges",     debug_ranges_escn)
+            if (!ML_(sli_is_valid)(debug_ranges_escn))
+               FIND(need_dwarf2,     ".zdebug_ranges",    debug_ranges_escn)
+
+            FIND(   need_dwarf2,     ".debug_rnglists",   debug_rnglists_escn)
+            if (!ML_(sli_is_valid)(debug_rnglists_escn))
+               FIND(need_dwarf2,     ".zdebug_rnglists",  debug_rnglists_escn)
+
+            FIND(   need_dwarf2,     ".debug_loclists",   debug_loclists_escn)
+            if (!ML_(sli_is_valid)(debug_loclists_escn))
+               FIND(need_dwarf2,     ".zdebug_loclists",  debug_loclists_escn)
+
+            FIND(   need_dwarf2,     ".debug_loc",        debug_loc_escn)
+            if (!ML_(sli_is_valid)(debug_loc_escn))
+               FIND(need_dwarf2,     ".zdebug_loc",       debug_loc_escn)
+
+            FIND(   need_dwarf2,     ".debug_frame",      debug_frame_escn)
+            if (!ML_(sli_is_valid)(debug_frame_escn))
+               FIND(need_dwarf2,     ".zdebug_frame",     debug_frame_escn)
+
+            FIND(   need_dwarf2,     ".debug_addr",       debug_addr_escn)
+            if (!ML_(sli_is_valid)(debug_addr_escn))
+               FIND(need_dwarf2,     ".zdebug_addr",      debug_addr_escn)
+
+            FIND(   need_dwarf2,     ".debug_str_offsets", debug_str_offsets_escn)
+            if (!ML_(sli_is_valid)(debug_str_offsets_escn))
+               FIND(need_dwarf2,     ".zdebug_str_offsets", debug_str_offsets_escn)
+
+            FIND(   need_dwarf1,     ".debug",            dwarf1d_escn)
+            FIND(   need_dwarf1,     ".line",             dwarf1l_escn)
+
+#           undef FIND
+         } /* Find all interesting sections */
+      } /* do we have a debug image? */
+
+      /* TOPLEVEL */
+      /* Read symbols */
+      if (!nt_hdr.FileHeader.PointerToSymbolTable)
+         ML_(symerr)(di, False, "   object doesn't have a symbol table");
+      else
+         TRACE_SYMTAB( "\n--- Reading (PE, standard) (%u entries) ---\n",
+                       nt_hdr.FileHeader.NumberOfSymbols );
+
+      XArray *symbols = VG_(newXA)(ML_(dinfo_zalloc), "di.rpedi.1",
+                                   ML_(dinfo_free), sizeof(IMAGE_SYMBOL));
+
+      for (i = 0; i < nt_hdr.FileHeader.NumberOfSymbols; i++) {
+         IMAGE_SYMBOL sym;
+         ML_(img_get)(&sym, mimg, nt_hdr.FileHeader.PointerToSymbolTable
+                                  + i * sizeof(IMAGE_SYMBOL), sizeof(sym));
+
+         if (sym.SectionNumber && sym.SectionNumber <= nt_hdr.FileHeader.NumberOfSections
+             && (ISFCN(sym.Type) || sym.StorageClass == IMAGE_SYM_CLASS_EXTERNAL
+                 || sym.StorageClass == IMAGE_SYM_CLASS_LABEL))
+            VG_(addToXA)(symbols, &sym);
+
+         i += sym.NumberOfAuxSymbols;
+      }
+
+      VG_(setCmpFnXA)(symbols, cmp_IMAGE_SYMBOL_by_section_value);
+      VG_(sortXA)(symbols);
+
+      for (i = 0, n = VG_(sizeXA)(symbols); i < n; i++) {
+         const IMAGE_SYMBOL* sym = VG_(indexXA)(symbols, i);
+         const IMAGE_SYMBOL* nsym = i + 1 < n ? VG_(indexXA)(symbols, i + 1) : NULL;
+
+         IMAGE_SECTION_HEADER a_shdr;
+         ML_(img_get)(&a_shdr, mimg,
+                      shdr_mioff + (sym->SectionNumber - 1) * shdr_ment_szB,
+                      sizeof(a_shdr));
+
+         SymAVMAs sym_avmas_really;
+         Int    sym_size = 0;
+         Bool   is_text = False, is_ifunc = ISFCN(sym->Type);
+         Bool   is_global = sym->StorageClass == IMAGE_SYM_CLASS_LABEL ? False : True;
+         sym_avmas_really.main = obj_avma + a_shdr.VirtualAddress + sym->Value;
+         SET_TOCPTR_AVMA(sym_avmas_really, 0);
+         SET_LOCAL_EP_AVMA(sym_avmas_really, 0);
+
+         if (!VG_(strcmp)((char *)a_shdr.Name, ".text"))
+         {
+            sym_size = di->text_size - sym->Value;
+            is_text = True;
+         }
+         if (!VG_(strcmp)((char *)a_shdr.Name, ".data"))
+            sym_size = di->data_size - sym->Value;
+         if (!VG_(strcmp)((char *)a_shdr.Name, ".rodata"))
+            sym_size = di->rodata_size - sym->Value;
+         if (!VG_(strcmp)((char *)a_shdr.Name, ".bss"))
+            sym_size = di->bss_size - sym->Value;
+
+         if (nsym && nsym->SectionNumber == sym->SectionNumber)
+            sym_size = nsym->Value - sym->Value;
+
+         DiSym  disym;
+         VG_(memset)(&disym, 0, sizeof(disym));
+         HChar* cstr;
+
+         if (sym->N.Name.Short)
+         {
+            char buffer[9];
+            VG_(memcpy)(buffer, sym->N.ShortName, 8);
+            buffer[8] = 0;
+            cstr = ML_(dinfo_strdup)("di.res__n.1", buffer);
+         }
+         else
+            cstr = ML_(img_strdup)(mimg, "di.res__n.1",
+                                   strtab_mioff + sym->N.Name.Long);
+
+         disym.avmas  = sym_avmas_really;
+         disym.pri_name  = ML_(addStr) ( di, cstr, -1 );
+         disym.sec_names = NULL;
+         disym.size      = sym_size;
+         disym.isText    = is_text;
+         disym.isIFunc   = is_ifunc;
+         disym.isGlobal  = is_global;
+         if (cstr) { ML_(dinfo_free)(cstr); cstr = NULL; }
+         vg_assert(disym.pri_name);
+         vg_assert(GET_TOCPTR_AVMA(disym.avmas) == 0);
+         /* has no role except on ppc64be-linux */
+         ML_(addSym) ( di, &disym );
+
+         if (TRACE_SYMTAB_ENABLED) {
+            TRACE_SYMTAB("    rec(%c) [%4ld]:          "
+                         "  val %#010lx, sz %4d  %s\n",
+                         is_text ? 't' : 'd',
+                         i,
+                         disym.avmas.main,
+                         (Int)disym.size,
+                         disym.pri_name
+            );
+            if (GET_LOCAL_EP_AVMA(disym.avmas) != 0) {
+                     TRACE_SYMTAB("               local entry point %#010lx\n",
+                                  GET_LOCAL_EP_AVMA(disym.avmas));
+            }
+         }
+      }
+
+      VG_(deleteXA)(symbols);
+
+      /* TOPLEVEL */
+      /* Read .eh_frame and .debug_frame (call-frame-info) if any.  Do
+         the .eh_frame section(s) first. */
+      vg_assert(di->n_ehframe >= 0 && di->n_ehframe <= N_EHFRAME_SECTS);
+      for (i = 0; i < di->n_ehframe; i++) {
+         /* see Comment_on_EH_FRAME_MULTIPLE_INSTANCES above for why
+            this next assertion should hold. */
+         vg_assert(ML_(sli_is_valid)(ehframe_escn[i]));
+         vg_assert(ehframe_escn[i].szB == di->ehframe_size[i]);
+         ML_(read_callframe_info_dwarf3)( di,
+                                          ehframe_escn[i],
+                                          di->ehframe_avma[i],
+                                          True/*is_ehframe*/ );
+      }
+      if (ML_(sli_is_valid)(debug_frame_escn)) {
+         ML_(read_callframe_info_dwarf3)( di,
+                                          debug_frame_escn,
+                                          0/*assume zero avma*/,
+                                          False/*!is_ehframe*/ );
+      }
+
+      /* TOPLEVEL */
+      /* jrs 2006-01-01: icc-8.1 has been observed to generate
+         binaries without debug_str sections.  Don't preclude
+         debuginfo reading for that reason, but, in
+         read_unitinfo_dwarf2, do check that debugstr is non-NULL
+         before using it. */
+      if (ML_(sli_is_valid)(debug_info_escn)
+          && ML_(sli_is_valid)(debug_abbv_escn)
+          && ML_(sli_is_valid)(debug_line_escn)) {
+         /* The old reader: line numbers and unwind info only */
+         ML_(read_debuginfo_dwarf3) ( di,
+                                      debug_info_escn,
+                                      debug_types_escn,
+                                      debug_abbv_escn,
+                                      debug_line_escn,
+                                      debug_str_escn,
+                                      debug_str_alt_escn,
+                                      debug_line_str_escn );
+         /* The new reader: read the DIEs in .debug_info to acquire
+            information on variable types and locations or inline info.
+            But only if the tool asks for it, or the user requests it on
+            the command line. */
+         if (VG_(clo_read_var_info) /* the user or tool asked for it */
+             || VG_(clo_read_inline_info)) {
+            ML_(new_dwarf3_reader)(
+               di, debug_info_escn,     debug_types_escn,
+                   debug_abbv_escn,     debug_line_escn,
+                   debug_str_escn,      debug_ranges_escn,
+                   debug_rnglists_escn, debug_loclists_escn,
+                   debug_loc_escn,      debug_info_alt_escn,
+                   debug_abbv_alt_escn, debug_line_alt_escn,
+                   debug_str_alt_escn,  debug_line_str_escn,
+                   debug_addr_escn,     debug_str_offsets_escn
+            );
+         }
+      }
+
+   } /* "Find interesting sections, read the symbol table(s), read any debug
+        information" (a local scope) */
+
+   /* TOPLEVEL */
+   res = True;
+
+  out:
+   {
+      /* Last, but not least, detach from the image(s). */
+      if (mimg) ML_(img_done)(mimg);
+      if (dimg) ML_(img_done)(dimg);
+      if (aimg) ML_(img_done)(aimg);
+
+      return res;
+   } /* out: */
+
+   /* NOTREACHED */
 }
 
 #endif // defined(VGO_linux) || defined(VGO_darwin) || defined(VGO_solaris) || defined(VGO_freebsd)

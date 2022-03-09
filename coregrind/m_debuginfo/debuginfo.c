@@ -1705,10 +1705,65 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
    /* See if we can find it, and check it's in-dateness. */
    sres = VG_(stat)(pdbname, &stat_buf);
    if (sr_isError(sres)) {
-      VG_(message)(Vg_UserMsg, "Warning: Missing or un-stat-able %s\n",
-                   pdbname);
-      if (VG_(clo_verbosity) > 0)
-         VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: missing: %s\n", pdbname);
+      /* play safe; always invalidate the debug info caches.  I don't know if
+         this is necessary, but anyway .. */
+      caches__invalidate();
+      /* dump old info for this range, if any */
+      discard_syms_in_range( avma_obj, total_size );
+      advance_current_DiEpoch("VG_(di_notify_pdb_debuginfo)");
+
+      DebugInfo* di = find_or_create_DebugInfo_for(exename);
+
+      /* this di must be new, since we just nuked any old stuff in the range */
+      vg_assert(di && !di->fsm.have_rx_map && !di->fsm.rw_map_count);
+      vg_assert(!di->have_dinfo);
+
+      Bool ok = ML_(read_pe_debug_info)( di, avma_obj, bias_obj );
+
+      if (ok) {
+         TRACE_SYMTAB("\n------ Canonicalising the "
+                      "acquired info ------\n");
+         /* invalidate the debug info caches. */
+         caches__invalidate();
+         /* prepare read data for use */
+         ML_(canonicaliseTables)( di );
+         /* Check invariants listed in
+            Comment_on_IMPORTANT_REPRESENTATIONAL_INVARIANTS in
+            priv_storage.h. */
+         check_CFSI_related_invariants(di);
+         ML_(finish_CFSI_arrays)(di);
+
+         // Mark di's first epoch point as a valid epoch.  Because its
+         // last_epoch value is still invalid, this changes di's state from
+         // "allocated" to "active".
+         vg_assert(is_DebugInfo_allocated(di));
+         di->first_epoch = VG_(current_DiEpoch)();
+         vg_assert(is_DebugInfo_active(di));
+         show_epochs("di_notify_ACHIEVE_ACCEPT_STATE success");
+
+         /* notify m_redir about it */
+         TRACE_SYMTAB("\n------ Notifying m_redir ------\n");
+         VG_(redir_notify_new_DebugInfo)( di );
+         /* Note that we succeeded */
+         di->have_dinfo = True;
+         vg_assert(di->handle > 0);
+
+      } else {
+         VG_(message)(Vg_UserMsg, "Warning: Missing or un-stat-able %s\n",
+                      pdbname);
+         if (VG_(clo_verbosity) > 0)
+            VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: missing: %s\n", pdbname);
+
+         /* We cannot make any sense of this pdb, so (force) discard it,
+            even if VG_(clo_keep_debuginfo) is True. */
+         const Bool save_clo_keep_debuginfo = VG_(clo_keep_debuginfo);
+         VG_(clo_keep_debuginfo) = False;
+         // The below will assert if di is not active. Not too sure what
+         // the state of di in this failed loading state.
+         discard_or_archive_DebugInfo (di);
+         VG_(clo_keep_debuginfo) = save_clo_keep_debuginfo;
+      }
+
       goto out;
    }
    pdb_mtime = stat_buf.mtime;

@@ -54,6 +54,29 @@ extern Bool ML_(read_elf_debug_info) ( DebugInfo* di );
 
 extern Bool ML_(check_elf_and_get_rw_loads) ( Int fd, const HChar* filename, Int * rw_load_count );
 
+/* Try and open a separate debug file, ignoring any where the CRC does
+   not match the value from the main object file.  Returned DiImage
+   must be discarded by the caller.
+ */
+extern DiImage* ML_(open_debug_file)( const HChar* name,
+                                      const HChar* buildid,
+                                      UInt crc,
+                                      Bool rel_ok,
+                                      const HChar* serverAddr );
+
+/* Try to find a separate debug file for a given object file.  If
+   found, return its DiImage, which should be freed by the caller. */
+extern DiImage* ML_(find_debug_file)( struct _DebugInfo* di,
+                                      const HChar* objpath,
+                                      const HChar* buildid,
+                                      const HChar* debugname,
+                                      UInt crc, Bool rel_ok );
+
+/* Try to find a separate debug file for a given object file, in a
+   hacky and dangerous way: check only the --extra-debuginfo-path and
+   the --debuginfo-server.  And don't do a consistency check. */
+extern DiImage* ML_(find_debug_file_ad_hoc)( const DebugInfo* di,
+                                             const HChar* objpath );
 
 #endif /* ndef __PRIV_READELF_H */
 
