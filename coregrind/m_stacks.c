@@ -95,6 +95,7 @@ typedef struct _Stack {
    struct _Stack *next;
    UWord outer_id; /* For an inner valgrind, stack id registered in outer
                       valgrind. */
+   Word old_SP;
 } Stack;
 
 static Stack *stacks;
@@ -199,6 +200,7 @@ UWord VG_(register_stack)(Addr start, Addr end)
    i = VG_(malloc)("stacks.rs.1", sizeof(Stack));
    i->start = start;
    i->end = end;
+   i->old_SP = end;
    i->id = next_id++;
    i->next = stacks;
    stacks = i;
@@ -393,6 +395,29 @@ static void complaints_stack_switch (Addr old_SP, Addr new_SP)
 
    These functions are performance critical, so are built with macros. */
 
+static void set_current_stack(Stack *new_stack, Word *old_SP, Word *new_SP, Word *delta) {
+   Stack* old_stack = find_stack_by_addr(*old_SP);
+
+   EDEBUG("current_stack  %p-%p %lu new_SP %p old_SP %p\n",
+          (void *) (current_stack ? current_stack->start : 0x0),
+          (void *) (current_stack ? current_stack->end : 0x0),
+          current_stack ? current_stack->id : 0,
+          (void *)*new_SP, (void *)*old_SP);
+
+   /* The stack pointer is now in another stack.  Update the current */
+   /* stack information and return without doing anything else. */
+   if (old_stack)
+      old_stack->old_SP = *old_SP;
+   current_stack = new_stack;
+   *old_SP = current_stack->old_SP;
+   *delta = *new_SP - *old_SP;
+
+   EDEBUG("new current_stack  %p-%p %lu sp %p->%p (%d)\n",
+          (void *) current_stack->start,
+          (void *) current_stack->end,
+          current_stack->id, *old_SP, *new_SP, *delta);
+}
+
 // preamble + check if stack has switched.
 #define IF_STACK_SWITCH_SET_current_stack_AND_RETURN                    \
    Word delta  = (Word)new_SP - (Word)old_SP;                           \
@@ -409,18 +434,21 @@ static void complaints_stack_switch (Addr old_SP, Addr new_SP)
       Stack* new_stack = find_stack_by_addr(new_SP);                    \
       if (new_stack                                                     \
           && (current_stack == NULL || new_stack->id != current_stack->id)) { \
-         /* The stack pointer is now in another stack.  Update the current */ \
-         /* stack information and return without doing anything else. */ \
-         current_stack = new_stack;                                     \
-         EDEBUG("new current_stack  %p-%p %lu \n",                      \
-                (void *) current_stack->start,                          \
-                (void *) current_stack->end,                            \
-                current_stack->id);                                     \
-         return;                                                        \
+         set_current_stack(new_stack, &old_SP, &new_SP, &delta);        \
+         if (delta < 0) {                                               \
+            if (ecu != -1)                                              \
+               VG_TRACK( new_mem_stack_w_ECU, new_SP, -delta, ecu );    \
+            else                                                        \
+               VG_TRACK( new_mem_stack, new_SP, -delta );               \
+            VG_TRACK( post_mem_write, Vg_CoreClientReq, 0,              \
+                      new_SP, -delta );                                 \
+            return;                                                     \
+         }                                                              \
       } else {                                                          \
          EDEBUG("new current_stack not found\n");                       \
       }                                                                 \
-   }
+   }                                                                    \
+   if (current_stack) current_stack->old_SP = old_SP;
 
 #define IF_BIG_DELTA_complaints_AND_RETURN                              \
    if (UNLIKELY(delta < -VG_(clo_max_stackframe)                        \
@@ -450,6 +478,7 @@ void VG_(unknown_SP_update_w_ECU)( Addr old_SP, Addr new_SP, UInt ecu ) {
 
 VG_REGPARM(2)
 void VG_(unknown_SP_update)( Addr old_SP, Addr new_SP ) {
+   UInt ecu = -1;
    IF_STACK_SWITCH_SET_current_stack_AND_RETURN;
    IF_BIG_DELTA_complaints_AND_RETURN;
    IF_SMALLER_STACK_die_mem_stack_AND_RETURN;
